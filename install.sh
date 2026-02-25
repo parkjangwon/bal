@@ -242,3 +242,4 @@ else
     echo -e "${RED}Installed, but $BINARY_NAME not found in PATH${NC}"
     echo "You may need to restart your shell"
 fi
+
