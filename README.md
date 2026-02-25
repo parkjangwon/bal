@@ -40,6 +40,14 @@ curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | ba
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
 ```
 
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
+```
+
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
+```
+
 **One-line (no confirmation, auto-remove):**
 ```bash
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
