@@ -64,6 +64,13 @@ impl ConfigStore {
         Ok(RuntimeConfig::from_config(config, path.to_path_buf()))
     }
 
+    /// Validate a candidate config for reload without applying it.
+    pub async fn validate_reload_candidate(path: &Path) -> Result<RuntimeConfig> {
+        Self::validate_and_load(path)
+            .await
+            .with_context(|| format!("Pre-reload validation failed: {}", path.display()))
+    }
+
     /// Perform configuration hot-swap
     ///
     /// 1. Load and validate new configuration file
@@ -83,7 +90,16 @@ impl ConfigStore {
         info!("Configuration reload starting: {}", path.display());
 
         // Load and validate new configuration
-        let new_runtime_config = Self::validate_and_load(&path).await?;
+        let new_runtime_config = match Self::validate_reload_candidate(&path).await {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!(
+                    "Configuration reload rejected. Keeping previous runtime configuration: {}",
+                    e
+                );
+                return Err(e);
+            }
+        };
 
         // Check for port change
         if current_config.port != new_runtime_config.port {

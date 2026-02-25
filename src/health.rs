@@ -93,6 +93,8 @@ impl HealthChecker {
                 )
                 .await;
 
+                backend.mark_checked_now();
+
                 match result {
                     Ok(Ok(_)) => {
                         // Connection success

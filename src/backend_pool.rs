@@ -4,8 +4,9 @@
 //! Tracks each backend's health status, active connection count, and consecutive
 //! failure count, sharing state in a thread-safe manner.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::BackendConfig;
 
@@ -14,6 +15,13 @@ use crate::config::BackendConfig;
 /// Uses Atomic types for lock-free thread-safe state sharing.
 /// Uses Ordering::Relaxed for performance optimization. (Only single Atomic
 /// operation consistency is needed)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendErrorKind {
+    Timeout,
+    ConnectionRefused,
+    Other,
+}
+
 #[derive(Debug)]
 pub struct BackendState {
     /// Backend configuration (immutable)
@@ -26,6 +34,18 @@ pub struct BackendState {
     consecutive_failures: AtomicU32,
     /// Consecutive health check success count
     consecutive_successes: AtomicU32,
+    /// Backoff streak for connect failures
+    failover_failure_streak: AtomicU32,
+    /// Cooldown end timestamp (unix epoch ms)
+    cooldown_until_ms: AtomicU64,
+    /// Last health check timestamp (unix epoch ms)
+    last_check_ms: AtomicU64,
+    /// Connection timeout counter
+    timeout_count: AtomicU64,
+    /// Connection refused counter
+    refused_count: AtomicU64,
+    /// Other connection error counter
+    other_error_count: AtomicU64,
 }
 
 impl BackendState {
@@ -38,6 +58,12 @@ impl BackendState {
             active_connections: AtomicUsize::new(0),
             consecutive_failures: AtomicU32::new(0),
             consecutive_successes: AtomicU32::new(0),
+            failover_failure_streak: AtomicU32::new(0),
+            cooldown_until_ms: AtomicU64::new(0),
+            last_check_ms: AtomicU64::new(0),
+            timeout_count: AtomicU64::new(0),
+            refused_count: AtomicU64::new(0),
+            other_error_count: AtomicU64::new(0),
         }
     }
 
@@ -151,6 +177,78 @@ impl BackendState {
     /// Get backend address string (host:port format)
     pub fn address(&self) -> String {
         format!("{}:{}", self.config.host, self.config.port)
+    }
+
+    pub fn mark_checked_now(&self) {
+        self.last_check_ms
+            .store(Self::now_unix_ms(), Ordering::Relaxed);
+    }
+
+    pub fn last_check_ms(&self) -> u64 {
+        self.last_check_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn cooldown_until_ms(&self) -> u64 {
+        self.cooldown_until_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn is_in_cooldown(&self) -> bool {
+        self.cooldown_until_ms() > Self::now_unix_ms()
+    }
+
+    pub fn timeout_count(&self) -> u64 {
+        self.timeout_count.load(Ordering::Relaxed)
+    }
+
+    pub fn refused_count(&self) -> u64 {
+        self.refused_count.load(Ordering::Relaxed)
+    }
+
+    pub fn other_error_count(&self) -> u64 {
+        self.other_error_count.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_connect_success(&self, min_successes: u32) {
+        self.failover_failure_streak.store(0, Ordering::Relaxed);
+        self.cooldown_until_ms.store(0, Ordering::Relaxed);
+        self.mark_success(min_successes);
+    }
+
+    pub fn mark_connect_failure(
+        &self,
+        kind: BackendErrorKind,
+        max_failures: u32,
+        backoff_initial_ms: u64,
+        backoff_max_ms: u64,
+        cooldown_ms: u64,
+    ) {
+        match kind {
+            BackendErrorKind::Timeout => {
+                self.timeout_count.fetch_add(1, Ordering::Relaxed);
+            }
+            BackendErrorKind::ConnectionRefused => {
+                self.refused_count.fetch_add(1, Ordering::Relaxed);
+            }
+            BackendErrorKind::Other => {
+                self.other_error_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let streak = self.failover_failure_streak.fetch_add(1, Ordering::Relaxed) + 1;
+        let multiplier = 1u64.checked_shl((streak - 1).min(20)).unwrap_or(u64::MAX);
+        let exp_backoff = backoff_initial_ms.saturating_mul(multiplier);
+        let backoff = exp_backoff.min(backoff_max_ms);
+        let until = Self::now_unix_ms().saturating_add(backoff.max(cooldown_ms));
+        self.cooldown_until_ms.store(until, Ordering::Relaxed);
+
+        self.mark_failure(max_failures);
+    }
+
+    fn now_unix_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
     }
 }
 
@@ -295,6 +393,16 @@ mod tests {
         }
 
         assert_eq!(state.active_connections(), 0);
+    }
+
+    #[test]
+    fn test_connect_failure_sets_cooldown_and_counters() {
+        let config = create_test_backend("127.0.0.1", 8080);
+        let state = BackendState::new(config);
+
+        state.mark_connect_failure(BackendErrorKind::Timeout, 1, 100, 1000, 200);
+        assert!(state.is_in_cooldown());
+        assert_eq!(state.timeout_count(), 1);
     }
 
     #[test]

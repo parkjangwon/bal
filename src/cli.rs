@@ -115,6 +115,10 @@ pub enum Commands {
             help = "Configuration file path for status summary"
         )]
         config: Option<PathBuf>,
+
+        /// Print status in JSON format
+        #[arg(long, help = "Print status in JSON format")]
+        json: bool,
     },
 }
 

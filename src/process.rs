@@ -7,6 +7,7 @@
 use anyhow::{bail, Result};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use serde::Serialize;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,7 +22,23 @@ use crate::error::ResultExt;
 /// Identifies and controls daemon process via PID file.
 pub struct ProcessManager;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendErrorCounters {
+    pub timeout: u64,
+    pub refused: u64,
+    pub other: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendStatusSummary {
+    pub address: String,
+    pub reachable: bool,
+    pub active_connections: usize,
+    pub last_check_time: String,
+    pub counters: BackendErrorCounters,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProcessStatusSummary {
     pub running: bool,
     pub pid: Option<i32>,
@@ -31,6 +48,9 @@ pub struct ProcessStatusSummary {
     pub method: Option<String>,
     pub backend_total: Option<usize>,
     pub backend_reachable: Option<usize>,
+    pub backends: Vec<BackendStatusSummary>,
+    pub active_connections: usize,
+    pub last_check_time: String,
 }
 
 impl ProcessManager {
@@ -196,16 +216,73 @@ impl ProcessManager {
             method: None,
             backend_total: None,
             backend_reachable: None,
+            backends: Vec::new(),
+            active_connections: 0,
+            last_check_time: chrono::Utc::now().to_rfc3339(),
         };
 
         if let Some(path) = resolved_config_path {
             if path.exists() {
                 if let Ok(config) = Config::load_from_file(&path).await {
                     let mut reachable = 0usize;
+                    let mut backend_summaries = Vec::new();
+                    let check_time = chrono::Utc::now().to_rfc3339();
+
                     for backend in &config.backends {
-                        if backend.check_connectivity().await.is_ok() {
+                        let result = backend.check_connectivity().await;
+                        let (is_reachable, counters) = match result {
+                            Ok(_) => (
+                                true,
+                                BackendErrorCounters {
+                                    timeout: 0,
+                                    refused: 0,
+                                    other: 0,
+                                },
+                            ),
+                            Err(err) => {
+                                let lower = err.to_string().to_lowercase();
+                                if lower.contains("timeout") {
+                                    (
+                                        false,
+                                        BackendErrorCounters {
+                                            timeout: 1,
+                                            refused: 0,
+                                            other: 0,
+                                        },
+                                    )
+                                } else if lower.contains("refused") {
+                                    (
+                                        false,
+                                        BackendErrorCounters {
+                                            timeout: 0,
+                                            refused: 1,
+                                            other: 0,
+                                        },
+                                    )
+                                } else {
+                                    (
+                                        false,
+                                        BackendErrorCounters {
+                                            timeout: 0,
+                                            refused: 0,
+                                            other: 1,
+                                        },
+                                    )
+                                }
+                            }
+                        };
+
+                        if is_reachable {
                             reachable += 1;
                         }
+
+                        backend_summaries.push(BackendStatusSummary {
+                            address: format!("{}:{}", backend.host, backend.port),
+                            reachable: is_reachable,
+                            active_connections: 0,
+                            last_check_time: check_time.clone(),
+                            counters,
+                        });
                     }
 
                     summary.bind_address = config.bind_address;
@@ -213,6 +290,7 @@ impl ProcessManager {
                     summary.method = Some(config.method.to_string());
                     summary.backend_total = Some(config.backends.len());
                     summary.backend_reachable = Some(reachable);
+                    summary.backends = backend_summaries;
                 }
             }
         }
@@ -237,15 +315,44 @@ impl ProcessManager {
             _ => "-".to_string(),
         };
 
-        format!(
-            "bal status\n  running: {}\n  pid: {}\n  config: {}\n  listen: {}\n  method: {}\n  backends: {}",
-            running_text, pid_text, config_text, listen_text, method_text, backend_text
-        )
+        let mut report = format!(
+            "bal status\n  running: {}\n  pid: {}\n  config: {}\n  listen: {}\n  method: {}\n  backends: {}\n  active_connections: {}\n  last_check_time: {}",
+            running_text,
+            pid_text,
+            config_text,
+            listen_text,
+            method_text,
+            backend_text,
+            summary.active_connections,
+            summary.last_check_time
+        );
+
+        if !summary.backends.is_empty() {
+            report.push_str("\n  backend_details:");
+            for backend in &summary.backends {
+                report.push_str(&format!(
+                    "\n    - {} reachable={} active={} last_check={} counters(timeout={}, refused={}, other={})",
+                    backend.address,
+                    backend.reachable,
+                    backend.active_connections,
+                    backend.last_check_time,
+                    backend.counters.timeout,
+                    backend.counters.refused,
+                    backend.counters.other
+                ));
+            }
+        }
+
+        report
     }
 
-    pub async fn print_status(config_path: Option<PathBuf>) -> Result<()> {
+    pub async fn print_status(config_path: Option<PathBuf>, json: bool) -> Result<()> {
         let summary = Self::collect_status(config_path).await?;
-        println!("{}", Self::build_status_report(summary));
+        if json {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        } else {
+            println!("{}", Self::build_status_report(summary));
+        }
         Ok(())
     }
 }
@@ -276,6 +383,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_summary_serializes_to_json() {
+        let summary = ProcessStatusSummary {
+            running: false,
+            pid: None,
+            config_path: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: None,
+            method: None,
+            backend_total: Some(1),
+            backend_reachable: Some(0),
+            backends: vec![BackendStatusSummary {
+                address: "127.0.0.1:9000".to_string(),
+                reachable: false,
+                active_connections: 0,
+                last_check_time: "2026-01-01T00:00:00Z".to_string(),
+                counters: BackendErrorCounters {
+                    timeout: 1,
+                    refused: 0,
+                    other: 0,
+                },
+            }],
+            active_connections: 0,
+            last_check_time: "2026-01-01T00:00:00Z".to_string(),
+        };
+
+        let encoded = serde_json::to_string(&summary).expect("json encoding should work");
+        assert!(encoded.contains("\"backends\""));
+        assert!(encoded.contains("\"timeout\":1"));
+    }
+
+    #[test]
     fn build_status_report_contains_practical_runtime_summary() {
         let report = ProcessManager::build_status_report(ProcessStatusSummary {
             running: true,
@@ -286,11 +424,25 @@ mod tests {
             method: Some("round_robin".to_string()),
             backend_total: Some(2),
             backend_reachable: Some(1),
+            backends: vec![BackendStatusSummary {
+                address: "127.0.0.1:9000".to_string(),
+                reachable: true,
+                active_connections: 3,
+                last_check_time: "2026-01-01T00:00:00Z".to_string(),
+                counters: BackendErrorCounters {
+                    timeout: 0,
+                    refused: 0,
+                    other: 0,
+                },
+            }],
+            active_connections: 3,
+            last_check_time: "2026-01-01T00:00:00Z".to_string(),
         });
 
         assert!(report.contains("running: yes"));
         assert!(report.contains("pid: 4242"));
         assert!(report.contains("listen: 0.0.0.0:9295"));
         assert!(report.contains("backends: 1/2 reachable"));
+        assert!(report.contains("backend_details"));
     }
 }

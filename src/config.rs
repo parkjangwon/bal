@@ -99,6 +99,18 @@ impl BackendConfig {
 }
 
 /// Runtime tuning configuration
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverloadPolicy {
+    Reject,
+}
+
+impl Default for OverloadPolicy {
+    fn default() -> Self {
+        Self::Reject
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeTuning {
     #[serde(default = "default_health_check_interval_ms")]
@@ -115,6 +127,27 @@ pub struct RuntimeTuning {
 
     #[serde(default = "default_backend_connect_timeout_ms")]
     pub backend_connect_timeout_ms: u64,
+
+    #[serde(default = "default_failover_backoff_initial_ms")]
+    pub failover_backoff_initial_ms: u64,
+
+    #[serde(default = "default_failover_backoff_max_ms")]
+    pub failover_backoff_max_ms: u64,
+
+    #[serde(default = "default_backend_cooldown_ms")]
+    pub backend_cooldown_ms: u64,
+
+    #[serde(default = "default_max_concurrent_connections")]
+    pub max_concurrent_connections: usize,
+
+    #[serde(default = "default_connection_idle_timeout_ms")]
+    pub connection_idle_timeout_ms: u64,
+
+    #[serde(default)]
+    pub overload_policy: OverloadPolicy,
+
+    #[serde(default)]
+    pub tcp_backlog: Option<u32>,
 }
 
 impl Default for RuntimeTuning {
@@ -125,6 +158,13 @@ impl Default for RuntimeTuning {
             health_check_fail_threshold: default_health_check_fail_threshold(),
             health_check_success_threshold: default_health_check_success_threshold(),
             backend_connect_timeout_ms: default_backend_connect_timeout_ms(),
+            failover_backoff_initial_ms: default_failover_backoff_initial_ms(),
+            failover_backoff_max_ms: default_failover_backoff_max_ms(),
+            backend_cooldown_ms: default_backend_cooldown_ms(),
+            max_concurrent_connections: default_max_concurrent_connections(),
+            connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
+            overload_policy: OverloadPolicy::default(),
+            tcp_backlog: None,
         }
     }
 }
@@ -186,6 +226,26 @@ fn default_health_check_success_threshold() -> u32 {
 
 fn default_backend_connect_timeout_ms() -> u64 {
     HEALTH_CHECK_TIMEOUT_MS
+}
+
+fn default_failover_backoff_initial_ms() -> u64 {
+    100
+}
+
+fn default_failover_backoff_max_ms() -> u64 {
+    5_000
+}
+
+fn default_backend_cooldown_ms() -> u64 {
+    300
+}
+
+fn default_max_concurrent_connections() -> usize {
+    10_000
+}
+
+fn default_connection_idle_timeout_ms() -> u64 {
+    120_000
 }
 
 impl Config {
@@ -292,6 +352,22 @@ impl Config {
             bail!("backend_connect_timeout_ms must be greater than 0");
         }
 
+        if self.runtime.failover_backoff_initial_ms == 0 {
+            bail!("failover_backoff_initial_ms must be greater than 0");
+        }
+
+        if self.runtime.failover_backoff_max_ms < self.runtime.failover_backoff_initial_ms {
+            bail!("failover_backoff_max_ms must be >= failover_backoff_initial_ms");
+        }
+
+        if self.runtime.max_concurrent_connections == 0 {
+            bail!("max_concurrent_connections must be greater than 0");
+        }
+
+        if self.runtime.connection_idle_timeout_ms == 0 {
+            bail!("connection_idle_timeout_ms must be greater than 0");
+        }
+
         Ok(())
     }
 
@@ -316,6 +392,12 @@ runtime:
   health_check_fail_threshold: 1
   health_check_success_threshold: 1
   backend_connect_timeout_ms: 500
+  failover_backoff_initial_ms: 100
+  failover_backoff_max_ms: 5000
+  backend_cooldown_ms: 300
+  max_concurrent_connections: 10000
+  connection_idle_timeout_ms: 120000
+  overload_policy: "reject"
 
 # Backend server list
 backends:
@@ -379,12 +461,18 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
     println!("  - Load balancing: {:?}", config.method);
     println!("  - Log level: {}", config.log_level);
     println!(
-        "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms",
+        "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms max_conns={} idle_timeout={}ms overload_policy={}",
         config.runtime.health_check_interval_ms,
         config.runtime.health_check_timeout_ms,
         config.runtime.health_check_fail_threshold,
         config.runtime.health_check_success_threshold,
         config.runtime.backend_connect_timeout_ms,
+        config.runtime.failover_backoff_initial_ms,
+        config.runtime.failover_backoff_max_ms,
+        config.runtime.backend_cooldown_ms,
+        config.runtime.max_concurrent_connections,
+        config.runtime.connection_idle_timeout_ms,
+        match config.runtime.overload_policy { OverloadPolicy::Reject => "reject" },
     );
     println!("  - Number of backends: {}", config.backends.len());
 
@@ -447,6 +535,11 @@ backends:
         assert_eq!(config.runtime.health_check_fail_threshold, 1);
         assert_eq!(config.runtime.health_check_success_threshold, 1);
         assert_eq!(config.runtime.backend_connect_timeout_ms, 500);
+        assert_eq!(config.runtime.failover_backoff_initial_ms, 100);
+        assert_eq!(config.runtime.failover_backoff_max_ms, 5000);
+        assert_eq!(config.runtime.backend_cooldown_ms, 300);
+        assert_eq!(config.runtime.max_concurrent_connections, 10000);
+        assert_eq!(config.runtime.connection_idle_timeout_ms, 120000);
     }
 
     #[test]
@@ -460,6 +553,11 @@ runtime:
   health_check_fail_threshold: 3
   health_check_success_threshold: 2
   backend_connect_timeout_ms: 900
+  failover_backoff_initial_ms: 150
+  failover_backoff_max_ms: 2000
+  backend_cooldown_ms: 700
+  max_concurrent_connections: 321
+  connection_idle_timeout_ms: 33000
 backends:
   - host: "127.0.0.1"
     port: 9000
@@ -473,5 +571,10 @@ backends:
         assert_eq!(config.runtime.health_check_fail_threshold, 3);
         assert_eq!(config.runtime.health_check_success_threshold, 2);
         assert_eq!(config.runtime.backend_connect_timeout_ms, 900);
+        assert_eq!(config.runtime.failover_backoff_initial_ms, 150);
+        assert_eq!(config.runtime.failover_backoff_max_ms, 2000);
+        assert_eq!(config.runtime.backend_cooldown_ms, 700);
+        assert_eq!(config.runtime.max_concurrent_connections, 321);
+        assert_eq!(config.runtime.connection_idle_timeout_ms, 33000);
     }
 }

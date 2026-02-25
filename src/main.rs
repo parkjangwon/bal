@@ -92,10 +92,10 @@ async fn main() -> Result<()> {
             config::validate_config_file(config).await?;
             println!("Configuration file is valid");
         }
-        Commands::Status { config } => {
+        Commands::Status { config, json } => {
             // Local process/backend summary
             info!("Showing local bal status");
-            ProcessManager::print_status(config).await?;
+            ProcessManager::print_status(config, json).await?;
         }
     }
 

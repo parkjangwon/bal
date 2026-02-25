@@ -146,14 +146,18 @@ impl AppState {
         &self.reload
     }
 
-    /// Increment active connection count
-    pub async fn increment_connections(&self) {
+    /// Try to acquire one connection slot up to max_concurrent limit
+    pub async fn try_acquire_connection(&self, max_concurrent_connections: usize) -> bool {
         let mut guard = self.active_connections.write().await;
+        if *guard >= max_concurrent_connections {
+            return false;
+        }
         *guard += 1;
+        true
     }
 
-    /// Decrement active connection count
-    pub async fn decrement_connections(&self) {
+    /// Release one active connection slot
+    pub async fn release_connection(&self) {
         let mut guard = self.active_connections.write().await;
         if *guard > 0 {
             *guard -= 1;
