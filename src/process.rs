@@ -16,6 +16,7 @@ use std::process;
 use crate::config::Config;
 use crate::constants::{get_pid_file_path, get_runtime_dir};
 use crate::error::ResultExt;
+use crate::operator_message::render_operator_message;
 use crate::protection;
 
 /// Process manager
@@ -313,49 +314,106 @@ impl ProcessManager {
     }
 
     pub fn build_status_report(summary: ProcessStatusSummary, verbose: bool) -> String {
-        let running_text = if summary.running { "yes" } else { "no" };
-        let pid_text = summary
+        let running_text = if summary.running {
+            "running"
+        } else {
+            "stopped"
+        };
+        let daemon_text = summary
             .pid
-            .map(|pid| pid.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let config_text = summary
-            .config_path
-            .clone()
-            .unwrap_or_else(|| "-".to_string());
+            .map(|pid| format!("{} (pid={})", running_text, pid))
+            .unwrap_or_else(|| running_text.to_string());
         let listen_text = summary
             .port
             .map(|port| format!("{}:{}", summary.bind_address, port))
             .unwrap_or_else(|| "-".to_string());
-        let method_text = summary.method.unwrap_or_else(|| "-".to_string());
+        let method_text = summary.method.clone().unwrap_or_else(|| "-".to_string());
         let backend_text = match (summary.backend_reachable, summary.backend_total) {
             (Some(reachable), Some(total)) => format!("{}/{} reachable", reachable, total),
             _ => "-".to_string(),
         };
 
-        let mut report = format!(
-            "bal status (state observation)\n  running: {}\n  pid: {}\n  config: {}\n  listen: {}\n  method: {}\n  backends: {}\n  protection_mode: {}{}\n  active_connections: {}\n  last_check_time: {}",
-            running_text,
-            pid_text,
-            config_text,
-            listen_text,
-            method_text,
-            backend_text,
-            if summary.protection_mode.enabled { "on" } else { "off" },
-            summary
-                .protection_mode
-                .reason
-                .as_ref()
-                .map(|reason| format!(" ({})", reason))
-                .unwrap_or_default(),
-            summary.active_connections,
-            summary.last_check_time
-        );
+        let mut lines = vec![
+            "bal status".to_string(),
+            format!(
+                "  overall: {}",
+                if summary.running
+                    && matches!(summary.backend_reachable, Some(reachable) if reachable > 0)
+                {
+                    "OK"
+                } else if summary.running {
+                    "WARN"
+                } else {
+                    "FAILED"
+                }
+            ),
+            format!("  daemon: {}", daemon_text),
+            format!("  backends: {}", backend_text),
+            format!(
+                "  protection_mode: {}{}",
+                if summary.protection_mode.enabled {
+                    "on"
+                } else {
+                    "off"
+                },
+                summary
+                    .protection_mode
+                    .reason
+                    .as_ref()
+                    .map(|reason| format!(" ({})", reason))
+                    .unwrap_or_default()
+            ),
+        ];
 
-        if verbose && !summary.backends.is_empty() {
-            report.push_str("\n  backend_details:");
+        if !verbose {
+            if !summary.running {
+                lines.extend(render_operator_message(
+                    "daemon is not running",
+                    "service was not started or exited unexpectedly",
+                    "run 'bal check', then 'bal doctor', then start with 'bal start -d'",
+                ));
+            } else if let (Some(reachable), Some(total)) =
+                (summary.backend_reachable, summary.backend_total)
+            {
+                if total > 0 && reachable == 0 {
+                    lines.extend(render_operator_message(
+                        "no backend is reachable",
+                        "network path, backend service, or DNS is failing",
+                        "run 'bal doctor --verbose' and fix backend host/port/firewall now",
+                    ));
+                } else if reachable < total {
+                    lines.extend(render_operator_message(
+                        "some backends are unreachable",
+                        "partial outage or uneven backend health",
+                        "run 'bal doctor --verbose' and recover failing backends",
+                    ));
+                } else {
+                    lines.push("  next: continue monitoring with 'bal status'".to_string());
+                }
+            }
+
+            return lines.join("\n");
+        }
+
+        let config_text = summary
+            .config_path
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
+
+        lines.push(format!("  listen: {}", listen_text));
+        lines.push(format!("  method: {}", method_text));
+        lines.push(format!("  config: {}", config_text));
+        lines.push(format!(
+            "  active_connections: {}",
+            summary.active_connections
+        ));
+        lines.push(format!("  last_check_time: {}", summary.last_check_time));
+
+        if !summary.backends.is_empty() {
+            lines.push("  backend_details:".to_string());
             for backend in &summary.backends {
-                report.push_str(&format!(
-                    "\n    - {} reachable={} active={} last_check={} counters(timeout={}, refused={}, other={})",
+                lines.push(format!(
+                    "    - {} reachable={} active={} last_check={} counters(timeout={}, refused={}, other={})",
                     backend.address,
                     backend.reachable,
                     backend.active_connections,
@@ -367,29 +425,29 @@ impl ProcessManager {
             }
         }
 
-        if verbose && !summary.running {
-            report.push_str("\n  hint: daemon is not running. Start it with 'bal start -d'");
+        if !summary.running {
+            lines.push("  hint: daemon is not running. Start it with 'bal start -d'".to_string());
         }
 
-        if verbose && summary.config_path.is_none() {
-            report.push_str(
-                "\n  hint: config path unresolved. Pass '--config <FILE>' if using a custom path",
+        if summary.config_path.is_none() {
+            lines.push(
+                "  hint: config path unresolved. Pass '--config <FILE>' if using a custom path"
+                    .to_string(),
             );
         }
 
-        if verbose {
-            if let (Some(reachable), Some(total)) =
-                (summary.backend_reachable, summary.backend_total)
-            {
-                if total > 0 && reachable == 0 {
-                    report.push_str("\n  hint: no reachable backend. Run 'bal doctor' and verify backend host/port/firewall");
-                } else if reachable < total {
-                    report.push_str("\n  hint: partial backend reachability detected. Check failing backends in backend_details");
-                }
+        if let (Some(reachable), Some(total)) = (summary.backend_reachable, summary.backend_total) {
+            if total > 0 && reachable == 0 {
+                lines.push(
+                    "  hint: no reachable backend. Run 'bal doctor' and verify backend host/port/firewall"
+                        .to_string(),
+                );
+            } else if reachable < total {
+                lines.push("  hint: partial backend reachability detected. Check failing backends in backend_details".to_string());
             }
         }
 
-        report
+        lines.join("\n")
     }
 
     pub async fn print_status(
@@ -514,8 +572,7 @@ mod tests {
             true,
         );
 
-        assert!(report.contains("running: yes"));
-        assert!(report.contains("pid: 4242"));
+        assert!(report.contains("daemon: running (pid=4242)"));
         assert!(report.contains("listen: 0.0.0.0:9295"));
         assert!(report.contains("backends: 1/2 reachable"));
         assert!(report.contains("backend_details"));
@@ -585,5 +642,38 @@ mod tests {
         );
 
         assert!(!report.contains("backend_details"));
+        let top_level_lines = report.lines().filter(|line| line.starts_with("  ")).count();
+        assert!(
+            top_level_lines <= 8,
+            "expected concise output, got: {report}"
+        );
+    }
+
+    #[test]
+    fn build_status_report_issue_includes_operator_action_triplet() {
+        let report = ProcessManager::build_status_report(
+            ProcessStatusSummary {
+                protection_mode: ProtectionModeSummary {
+                    enabled: false,
+                    reason: None,
+                },
+                running: false,
+                pid: None,
+                config_path: Some("/tmp/bal.yml".to_string()),
+                bind_address: "0.0.0.0".to_string(),
+                port: Some(9295),
+                method: Some("round_robin".to_string()),
+                backend_total: Some(1),
+                backend_reachable: Some(0),
+                backends: Vec::new(),
+                active_connections: 0,
+                last_check_time: "2026-01-01T00:00:00Z".to_string(),
+            },
+            false,
+        );
+
+        assert!(report.contains("what_happened:"));
+        assert!(report.contains("why_likely:"));
+        assert!(report.contains("do_this_now:"));
     }
 }

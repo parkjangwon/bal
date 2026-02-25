@@ -9,7 +9,7 @@
 cargo install --path .
 ```
 
-2. 샘플 설정 복사
+2. 샘플 설정 복사 (simple 모드 최소 필드)
 ```bash
 mkdir -p ~/.bal
 cp sample/config.yaml ~/.bal/config.yaml
@@ -27,6 +27,31 @@ bal status
 bal start -d
 bal status
 bal stop
+```
+
+## Config Profiles
+
+### Simple 모드 (권장, 최소 필드)
+```yaml
+port: 9295
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+```
+
+### Advanced 모드 (선택)
+```yaml
+mode: "advanced"
+port: 9295
+method: "round_robin"
+log_level: "info"
+bind_address: "0.0.0.0"
+runtime:
+  health_check_interval_ms: 700
+  health_check_timeout_ms: 1000
+backends:
+  - host: "127.0.0.1"
+    port: 9000
 ```
 
 ## Core Commands
@@ -73,6 +98,31 @@ bal stop
   - backend host/port/firewall 확인
 - `status` 에서 reachable 0/N:
   - `bal doctor --verbose`로 상세 원인 확인
+
+## Structured Logs (ELK/Loki 연동)
+
+기본 로그 포맷은 기존과 동일한 텍스트입니다(하위호환 유지).
+
+```bash
+BAL_LOG_FORMAT=json bal start -d
+```
+
+JSON 한 줄 스키마 키:
+- `timestamp` (RFC3339 UTC)
+- `level`
+- `message`
+- `module`
+- `event` (현재 `log`)
+- `fields` (JSON object, 현재 기본값 `{}`)
+
+예시:
+```json
+{"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v1.2.0 starting","module":"bal::main","event":"log","fields":{}}
+```
+
+수집 팁:
+- Filebeat/Fluent Bit: NDJSON 파싱 후 `timestamp`를 이벤트 시간으로 매핑
+- Loki: `level`, `module`는 label로, `message`는 본문으로 저장
 
 ## Safety Notes (필수)
 

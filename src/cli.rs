@@ -14,7 +14,7 @@ use std::path::PathBuf;
     long_about = r#"
 bal is a high-performance L4 TCP load balancer.
 
-Core operations:
+Core operations (recommended flow: check -> doctor -> status):
   bal check     # Validate static configuration
   bal doctor    # Diagnose runtime environment and connectivity
   bal status    # Observe current daemon/backend state
@@ -62,7 +62,10 @@ pub enum Commands {
     Graceful,
 
     /// Validate static configuration
-    #[command(name = "check", about = "Validate static configuration (core)")]
+    #[command(
+        name = "check",
+        about = "Validate static configuration (core, step 1: check -> doctor -> status)"
+    )]
     Check {
         /// Configuration file path to validate
         #[arg(
@@ -87,7 +90,10 @@ pub enum Commands {
     },
 
     /// Observe local process and backend state
-    #[command(name = "status", about = "Observe local process/backend state (core)")]
+    #[command(
+        name = "status",
+        about = "Observe local process/backend state (core, step 3 after check -> doctor)"
+    )]
     Status {
         /// Configuration file path used for backend summary
         #[arg(
@@ -114,7 +120,7 @@ pub enum Commands {
     /// Run runtime diagnostics and environment checks
     #[command(
         name = "doctor",
-        about = "Run runtime diagnostics/environment checks (core)"
+        about = "Run runtime diagnostics/environment checks (core, step 2 between check -> status)"
     )]
     Doctor {
         /// Configuration file path used for diagnostics

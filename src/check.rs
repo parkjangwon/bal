@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::config::{Config, ConfigMode};
+use crate::operator_message::render_operator_message;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckReport {
@@ -34,25 +35,43 @@ impl CheckReport {
             format!("  warnings: {}", self.warnings.len()),
         ];
 
-        if verbose {
-            lines.push(format!("  config: {}", self.config_path));
-
-            if self.errors.is_empty() {
-                lines.push("  errors: none".to_string());
+        if !verbose {
+            if !self.errors.is_empty() {
+                lines.extend(render_operator_message(
+                    "configuration validation failed",
+                    "required fields are missing or invalid values were provided",
+                    "run 'bal check --verbose' and fix listed errors",
+                ));
+            } else if self.has_warnings() {
+                lines.extend(render_operator_message(
+                    "configuration is usable but has warnings",
+                    "safe defaults or network-exposure settings may need review",
+                    "run 'bal doctor' now, then inspect warnings with 'bal check --verbose'",
+                ));
             } else {
-                lines.push(format!("  errors: {}", self.errors.len()));
-                for error in &self.errors {
-                    lines.push(format!("    - {}", error));
-                }
+                lines.push("  next: run 'bal doctor'".to_string());
             }
 
-            if self.warnings.is_empty() {
-                lines.push("  warning_details: none".to_string());
-            } else {
-                lines.push("  warning_details:".to_string());
-                for warning in &self.warnings {
-                    lines.push(format!("    - {}", warning));
-                }
+            return lines.join("\n");
+        }
+
+        lines.push(format!("  config: {}", self.config_path));
+
+        if self.errors.is_empty() {
+            lines.push("  errors: none".to_string());
+        } else {
+            lines.push(format!("  errors: {}", self.errors.len()));
+            for error in &self.errors {
+                lines.push(format!("    - {}", error));
+            }
+        }
+
+        if self.warnings.is_empty() {
+            lines.push("  warning_details: none".to_string());
+        } else {
+            lines.push("  warning_details:".to_string());
+            for warning in &self.warnings {
+                lines.push(format!("    - {}", warning));
             }
         }
 
@@ -144,5 +163,13 @@ mod tests {
         assert!(rendered.contains("config: /tmp/bal.yaml"));
         assert!(rendered.contains("warning_details:"));
         assert!(rendered.contains("bind_address is 0.0.0.0"));
+    }
+
+    #[test]
+    fn plain_text_concise_warn_includes_operator_action_triplet() {
+        let rendered = sample_report().to_plain_text(false);
+        assert!(rendered.contains("what_happened:"));
+        assert!(rendered.contains("why_likely:"));
+        assert!(rendered.contains("do_this_now:"));
     }
 }

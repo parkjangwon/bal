@@ -1,14 +1,32 @@
 //! Logging module
 //!
 //! Initializes and manages env_logger based logging system.
-//! Supports both file and console logging with adjustable verbosity levels.
+//! Supports text and JSON one-line output formats.
 
 use anyhow::Result;
 use log::LevelFilter;
+use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
 
 use crate::constants::get_log_file_path;
+
+const LOG_FORMAT_ENV_KEY: &str = "BAL_LOG_FORMAT";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogFormat {
+    Text,
+    Json,
+}
+
+impl LogFormat {
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.unwrap_or("text").trim().to_ascii_lowercase().as_str() {
+            "json" => Self::Json,
+            _ => Self::Text,
+        }
+    }
+}
 
 /// Parse log level string to LevelFilter
 fn parse_log_level(level: &str) -> LevelFilter {
@@ -17,44 +35,49 @@ fn parse_log_level(level: &str) -> LevelFilter {
         "info" => LevelFilter::Info,
         "warn" => LevelFilter::Warn,
         "error" => LevelFilter::Error,
-        _ => LevelFilter::Info, // Default to info for unknown values
+        _ => LevelFilter::Info,
     }
 }
 
 /// Initialize logging system
 ///
-/// Log level is determined by config (default: info).
-/// Users can change log_level in config.yaml to debug, info, warn, or error.
-///
-/// - foreground mode: Logs to stdout
-/// - daemon mode: Logs to file only
+/// - foreground mode: logs to stdout
+/// - daemon mode: logs to stderr (usually redirected by service manager)
 pub fn init_logging(log_level_str: &str, daemon_mode: bool) -> Result<()> {
     let log_level = parse_log_level(log_level_str);
+    let log_format = LogFormat::parse(std::env::var(LOG_FORMAT_ENV_KEY).ok().as_deref());
 
     if daemon_mode {
-        // Daemon mode: log to file only
-        init_file_logging(log_level)?;
+        init_file_logging(log_level, log_format)?;
     } else {
-        // Foreground mode: log to stdout
-        init_console_logging(log_level)?;
+        init_console_logging(log_level, log_format)?;
     }
 
     Ok(())
 }
 
-/// Initialize console logging (stdout)
-fn init_console_logging(log_level: LevelFilter) -> Result<()> {
+fn init_console_logging(log_level: LevelFilter, log_format: LogFormat) -> Result<()> {
     env_logger::Builder::new()
-        .format(|buf, record| {
-            use std::io::Write;
-            // Custom log format: [timestamp] [level] message
-            writeln!(
-                buf,
-                "[{}] [{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                record.level(),
-                record.args()
-            )
+        .format(move |buf, record| {
+            if log_format == LogFormat::Json {
+                let payload = build_json_payload(
+                    &chrono::Utc::now().to_rfc3339(),
+                    &record.level().to_string(),
+                    &record.args().to_string(),
+                    record.module_path().unwrap_or(record.target()),
+                    "log",
+                    json!({}),
+                );
+                writeln!(buf, "{}", payload)
+            } else {
+                writeln!(
+                    buf,
+                    "[{}] [{}] {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                    record.level(),
+                    record.args()
+                )
+            }
         })
         .filter_level(log_level)
         .init();
@@ -62,27 +85,33 @@ fn init_console_logging(log_level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
-/// Initialize file logging (daemon mode)
-fn init_file_logging(log_level: LevelFilter) -> Result<()> {
+fn init_file_logging(log_level: LevelFilter, log_format: LogFormat) -> Result<()> {
     let log_path = get_log_file_path();
-
-    // Create directory
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // For daemon mode, we use stderr redirect approach
-    // In production, you'd use a proper file logger like log4rs or tracing-appender
     env_logger::Builder::new()
-        .format(|buf, record| {
-            use std::io::Write;
-            writeln!(
-                buf,
-                "[{}] [{}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                record.level(),
-                record.args()
-            )
+        .format(move |buf, record| {
+            if log_format == LogFormat::Json {
+                let payload = build_json_payload(
+                    &chrono::Utc::now().to_rfc3339(),
+                    &record.level().to_string(),
+                    &record.args().to_string(),
+                    record.module_path().unwrap_or(record.target()),
+                    "log",
+                    json!({}),
+                );
+                writeln!(buf, "{}", payload)
+            } else {
+                writeln!(
+                    buf,
+                    "[{}] [{}] {}",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                    record.level(),
+                    record.args()
+                )
+            }
         })
         .filter_level(log_level)
         .target(env_logger::Target::Stderr)
@@ -91,13 +120,28 @@ fn init_file_logging(log_level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
+fn build_json_payload(
+    timestamp: &str,
+    level: &str,
+    message: &str,
+    module: &str,
+    event: &str,
+    fields: Value,
+) -> Value {
+    json!({
+        "timestamp": timestamp,
+        "level": level,
+        "message": message,
+        "module": module,
+        "event": event,
+        "fields": fields
+    })
+}
+
 /// Append log message to file
-///
-/// Used to log specific events to file only, outside standard logging.
 pub fn append_to_log_file(message: &str) -> Result<()> {
     let log_path = get_log_file_path();
 
-    // Create directory
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -111,4 +155,28 @@ pub fn append_to_log_file(message: &str) -> Result<()> {
     writeln!(file, "[{}] {}", timestamp, message)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_log_payload_uses_stable_keys() {
+        let payload = build_json_payload(
+            "2026-01-01T00:00:00Z",
+            "INFO",
+            "bal started",
+            "bal::main",
+            "service_started",
+            serde_json::json!({"daemon": false}),
+        );
+
+        assert_eq!(payload["timestamp"], "2026-01-01T00:00:00Z");
+        assert_eq!(payload["level"], "INFO");
+        assert_eq!(payload["message"], "bal started");
+        assert_eq!(payload["module"], "bal::main");
+        assert_eq!(payload["event"], "service_started");
+        assert_eq!(payload["fields"]["daemon"], false);
+    }
 }

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::constants::get_pid_file_path;
+use crate::operator_message::render_operator_message;
 use crate::process::{ProcessManager, ProtectionModeSummary};
 use crate::protection;
 
@@ -39,14 +40,28 @@ impl DoctorReport {
 
     pub fn to_plain_text(&self, verbose: bool) -> String {
         let mut lines = Vec::new();
-        let overall = if self.has_critical_failure() {
+        let critical_count = self
+            .checks
+            .iter()
+            .filter(|check| check.level == CheckLevel::Critical)
+            .count();
+        let warn_count = self
+            .checks
+            .iter()
+            .filter(|check| check.level == CheckLevel::Warn)
+            .count();
+        let overall = if critical_count > 0 {
             "FAILED"
+        } else if warn_count > 0 {
+            "WARN"
         } else {
             "OK"
         };
 
-        lines.push("bal doctor (runtime diagnostics)".to_string());
+        lines.push("bal doctor".to_string());
         lines.push(format!("  overall: {}", overall));
+        lines.push(format!("  critical: {}", critical_count));
+        lines.push(format!("  warnings: {}", warn_count));
         lines.push(format!(
             "  protection_mode: {}{}",
             if self.protection_mode.enabled {
@@ -61,26 +76,36 @@ impl DoctorReport {
                 .unwrap_or_default()
         ));
 
-        for check in &self.checks {
-            if !verbose && check.level == CheckLevel::Ok {
-                continue;
+        if !verbose {
+            if critical_count > 0 {
+                lines.extend(render_operator_message(
+                    "runtime diagnostics found critical failures",
+                    "daemon state, bind target, or backend connectivity is broken",
+                    "run 'bal doctor --verbose' and fix critical checks before 'bal status'",
+                ));
+            } else if warn_count > 0 {
+                lines.extend(render_operator_message(
+                    "runtime diagnostics found warnings",
+                    "partial connectivity or port ownership needs confirmation",
+                    "run 'bal status' now, then inspect details with 'bal doctor --verbose'",
+                ));
+            } else {
+                lines.push("  next: run 'bal status'".to_string());
             }
 
+            return lines.join("\n");
+        }
+
+        for check in &self.checks {
             lines.push(format!(
                 "  - [{}] {}: {}",
                 check.level.label(),
                 check.name,
                 check.summary
             ));
-            if verbose {
-                if let Some(hint) = &check.hint {
-                    lines.push(format!("    hint: {}", hint));
-                }
+            if let Some(hint) = &check.hint {
+                lines.push(format!("    hint: {}", hint));
             }
-        }
-
-        if self.has_critical_failure() {
-            lines.push("  next: resolve CRITICAL items first, then rerun 'bal doctor'".to_string());
         }
 
         lines.join("\n")
@@ -429,8 +454,8 @@ mod tests {
         assert!(rendered.contains("address is already in use"));
         assert!(rendered.contains("hint:"));
         assert!(rendered.contains("bal status"));
-        assert!(rendered.contains("resolve CRITICAL items first"));
         assert!(rendered.contains("protection_mode: on"));
+        assert!(rendered.contains("[CRITICAL] bind"));
     }
 
     #[test]
@@ -459,7 +484,19 @@ mod tests {
         let rendered = report.to_plain_text(false);
         assert!(!rendered.contains("[OK]"));
         assert!(!rendered.contains("hint:"));
-        assert!(rendered.contains("[WARN]"));
+        assert!(!rendered.contains("[WARN]"));
+        assert!(rendered.contains("what_happened:"));
+        assert!(rendered.contains("why_likely:"));
+        assert!(rendered.contains("do_this_now:"));
+
+        let top_level_lines = rendered
+            .lines()
+            .filter(|line| line.starts_with("  "))
+            .count();
+        assert!(
+            top_level_lines <= 8,
+            "expected concise output, got: {rendered}"
+        );
     }
 
     #[test]

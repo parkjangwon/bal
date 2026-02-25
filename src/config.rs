@@ -518,44 +518,13 @@ impl Config {
 
     /// Generate default configuration file template
     pub fn default_template() -> String {
-        r#"mode: "simple"
+        r#"# simple mode minimal config (recommended)
+# Optional advanced examples are documented in README.
 
-# simple: core fields only (recommended)
-# advanced: exposes all runtime tuning knobs
-
-# bal service port
 port: 9295
-
-# Load balancing method
-method: "round_robin"
-
-# Log level (debug, info, warn, error)
-log_level: "info"
-
-# Bind address for listener
-bind_address: "0.0.0.0"
-
-# Runtime tuning knobs (advanced mode)
-# mode: advanced
-# runtime:
-#   health_check_interval_ms: 200
-#   health_check_timeout_ms: 500
-#   health_check_fail_threshold: 1
-#   health_check_success_threshold: 1
-#   backend_connect_timeout_ms: 500
-#   failover_backoff_initial_ms: 100
-#   failover_backoff_max_ms: 5000
-#   backend_cooldown_ms: 300
-#   max_concurrent_connections: 10000
-#   connection_idle_timeout_ms: 120000
-#   overload_policy: "reject"
-
-# Backend server list
 backends:
   - host: "127.0.0.1"
     port: 9000
-  - host: "127.0.0.1"
-    port: 9100
 "#
         .to_string()
     }
@@ -776,5 +745,16 @@ backends:
         assert_eq!(config.runtime.failover_backoff_max_ms, 10000);
         assert_eq!(config.runtime.backend_cooldown_ms, 1000);
         assert_eq!(config.runtime.max_concurrent_connections, 12000);
+    }
+
+    #[test]
+    fn default_template_shows_only_simple_minimum_fields() {
+        let template = Config::default_template();
+        assert!(template.contains("port: 9295"));
+        assert!(template.contains("backends:"));
+        assert!(!template.contains("method:"));
+        assert!(!template.contains("bind_address:"));
+        assert!(!template.contains("log_level:"));
+        assert!(!template.contains("runtime:"));
     }
 }

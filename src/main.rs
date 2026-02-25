@@ -21,6 +21,7 @@ mod error;
 mod health;
 mod load_balancer;
 mod logging;
+mod operator_message;
 mod process;
 mod protection;
 mod proxy;

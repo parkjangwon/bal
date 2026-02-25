@@ -1,0 +1,5 @@
+# simple mode minimal config (recommended)
+port: 9295
+backends:
+  - host: "127.0.0.1"
+    port: 9000
