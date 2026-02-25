@@ -5,7 +5,7 @@
 //! strong validation.
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -13,7 +13,10 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::net::{lookup_host, TcpStream};
 
-use crate::constants::{get_home_config_path, get_system_config_path, DEFAULT_PORT};
+use crate::constants::{
+    get_home_config_path, get_system_config_path, DEFAULT_PORT, HEALTH_CHECK_INTERVAL_MS,
+    HEALTH_CHECK_MAX_RETRIES, HEALTH_CHECK_MIN_SUCCESS, HEALTH_CHECK_TIMEOUT_MS,
+};
 
 /// Load balancing algorithm types
 ///
@@ -95,9 +98,109 @@ impl BackendConfig {
     }
 }
 
+/// Runtime tuning configuration
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverloadPolicy {
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMode {
+    Simple,
+    Advanced,
+}
+
+impl Default for ConfigMode {
+    fn default() -> Self {
+        Self::Simple
+    }
+}
+
+impl Default for OverloadPolicy {
+    fn default() -> Self {
+        Self::Reject
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTuning {
+    #[serde(default = "default_health_check_interval_ms")]
+    pub health_check_interval_ms: u64,
+
+    #[serde(default = "default_health_check_timeout_ms")]
+    pub health_check_timeout_ms: u64,
+
+    #[serde(default = "default_health_check_fail_threshold")]
+    pub health_check_fail_threshold: u32,
+
+    #[serde(default = "default_health_check_success_threshold")]
+    pub health_check_success_threshold: u32,
+
+    #[serde(default = "default_backend_connect_timeout_ms")]
+    pub backend_connect_timeout_ms: u64,
+
+    #[serde(default = "default_failover_backoff_initial_ms")]
+    pub failover_backoff_initial_ms: u64,
+
+    #[serde(default = "default_failover_backoff_max_ms")]
+    pub failover_backoff_max_ms: u64,
+
+    #[serde(default = "default_backend_cooldown_ms")]
+    pub backend_cooldown_ms: u64,
+
+    #[serde(default = "default_protection_trigger_threshold")]
+    pub protection_trigger_threshold: u32,
+
+    #[serde(default = "default_protection_window_ms")]
+    pub protection_window_ms: u64,
+
+    #[serde(default = "default_protection_stable_success_threshold")]
+    pub protection_stable_success_threshold: u32,
+
+    #[serde(default = "default_max_concurrent_connections")]
+    pub max_concurrent_connections: usize,
+
+    #[serde(default = "default_connection_idle_timeout_ms")]
+    pub connection_idle_timeout_ms: u64,
+
+    #[serde(default)]
+    pub overload_policy: OverloadPolicy,
+
+    #[serde(default)]
+    pub tcp_backlog: Option<u32>,
+}
+
+impl Default for RuntimeTuning {
+    fn default() -> Self {
+        Self {
+            health_check_interval_ms: default_health_check_interval_ms(),
+            health_check_timeout_ms: default_health_check_timeout_ms(),
+            health_check_fail_threshold: default_health_check_fail_threshold(),
+            health_check_success_threshold: default_health_check_success_threshold(),
+            backend_connect_timeout_ms: default_backend_connect_timeout_ms(),
+            failover_backoff_initial_ms: default_failover_backoff_initial_ms(),
+            failover_backoff_max_ms: default_failover_backoff_max_ms(),
+            backend_cooldown_ms: default_backend_cooldown_ms(),
+            protection_trigger_threshold: default_protection_trigger_threshold(),
+            protection_window_ms: default_protection_window_ms(),
+            protection_stable_success_threshold: default_protection_stable_success_threshold(),
+            max_concurrent_connections: default_max_concurrent_connections(),
+            connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
+            overload_policy: OverloadPolicy::default(),
+            tcp_backlog: None,
+        }
+    }
+}
+
 /// Complete configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Config {
+    /// Configuration mode for operator-facing UX
+    #[serde(default)]
+    pub mode: ConfigMode,
+
     /// Port for load balancer to listen on
     #[serde(default = "default_port")]
     pub port: u16,
@@ -110,8 +213,107 @@ pub struct Config {
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
+    /// Bind address for listener
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+
+    /// Runtime tuning knobs
+    pub runtime: RuntimeTuning,
+
     /// List of backend servers
     pub backends: Vec<BackendConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawConfig {
+    mode: Option<ConfigMode>,
+    port: Option<u16>,
+    method: Option<BalanceMethod>,
+    log_level: Option<String>,
+    bind_address: Option<String>,
+    runtime: Option<RuntimeTuning>,
+    #[serde(default)]
+    backends: Vec<BackendConfig>,
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawConfig::deserialize(deserializer)?;
+        let backend_count = raw.backends.len();
+
+        Ok(Self {
+            mode: raw.mode.unwrap_or_default(),
+            port: raw.port.unwrap_or_else(default_port),
+            method: raw.method.unwrap_or_default(),
+            log_level: raw.log_level.unwrap_or_else(default_log_level),
+            bind_address: raw.bind_address.unwrap_or_else(default_bind_address),
+            runtime: raw
+                .runtime
+                .unwrap_or_else(|| auto_tuned_runtime_profile(backend_count)),
+            backends: raw.backends,
+        })
+    }
+}
+
+fn auto_tuned_runtime_profile(backend_count: usize) -> RuntimeTuning {
+    if backend_count <= 2 {
+        RuntimeTuning {
+            health_check_interval_ms: 500,
+            health_check_timeout_ms: 800,
+            health_check_fail_threshold: 2,
+            health_check_success_threshold: 1,
+            backend_connect_timeout_ms: 800,
+            failover_backoff_initial_ms: 200,
+            failover_backoff_max_ms: 5_000,
+            backend_cooldown_ms: 500,
+            protection_trigger_threshold: 10,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 12,
+            max_concurrent_connections: 4_000,
+            connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
+            overload_policy: OverloadPolicy::default(),
+            tcp_backlog: None,
+        }
+    } else if backend_count <= 5 {
+        RuntimeTuning {
+            health_check_interval_ms: 700,
+            health_check_timeout_ms: 1_000,
+            health_check_fail_threshold: 2,
+            health_check_success_threshold: 1,
+            backend_connect_timeout_ms: 1_000,
+            failover_backoff_initial_ms: 300,
+            failover_backoff_max_ms: 7_000,
+            backend_cooldown_ms: 700,
+            protection_trigger_threshold: 12,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 14,
+            max_concurrent_connections: 8_000,
+            connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
+            overload_policy: OverloadPolicy::default(),
+            tcp_backlog: None,
+        }
+    } else {
+        RuntimeTuning {
+            health_check_interval_ms: 1_000,
+            health_check_timeout_ms: 1_200,
+            health_check_fail_threshold: 3,
+            health_check_success_threshold: 2,
+            backend_connect_timeout_ms: 1_200,
+            failover_backoff_initial_ms: 500,
+            failover_backoff_max_ms: 10_000,
+            backend_cooldown_ms: 1_000,
+            protection_trigger_threshold: 14,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 16,
+            max_concurrent_connections: 12_000,
+            connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
+            overload_policy: OverloadPolicy::default(),
+            tcp_backlog: None,
+        }
+    }
 }
 
 fn default_port() -> u16 {
@@ -122,13 +324,72 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_health_check_interval_ms() -> u64 {
+    HEALTH_CHECK_INTERVAL_MS
+}
+
+fn default_health_check_timeout_ms() -> u64 {
+    HEALTH_CHECK_TIMEOUT_MS
+}
+
+fn default_health_check_fail_threshold() -> u32 {
+    HEALTH_CHECK_MAX_RETRIES
+}
+
+fn default_health_check_success_threshold() -> u32 {
+    HEALTH_CHECK_MIN_SUCCESS
+}
+
+fn default_backend_connect_timeout_ms() -> u64 {
+    HEALTH_CHECK_TIMEOUT_MS
+}
+
+fn default_failover_backoff_initial_ms() -> u64 {
+    100
+}
+
+fn default_failover_backoff_max_ms() -> u64 {
+    5_000
+}
+
+fn default_backend_cooldown_ms() -> u64 {
+    300
+}
+
+fn default_protection_trigger_threshold() -> u32 {
+    10
+}
+
+fn default_protection_window_ms() -> u64 {
+    30_000
+}
+
+fn default_protection_stable_success_threshold() -> u32 {
+    12
+}
+
+fn default_max_concurrent_connections() -> usize {
+    10_000
+}
+
+fn default_connection_idle_timeout_ms() -> u64 {
+    120_000
+}
+
 impl Config {
     /// Create new Config with defaults
     pub fn new() -> Self {
         Self {
+            mode: ConfigMode::Simple,
             port: DEFAULT_PORT,
             method: BalanceMethod::RoundRobin,
             log_level: "info".to_string(),
+            bind_address: default_bind_address(),
+            runtime: RuntimeTuning::default(),
             backends: Vec::new(),
         }
     }
@@ -200,12 +461,69 @@ impl Config {
             bail!("Port cannot be 0");
         }
 
+        if self.bind_address.trim().is_empty() {
+            bail!("Bind address cannot be empty");
+        }
+
+        if self.runtime.health_check_interval_ms == 0 {
+            bail!("health_check_interval_ms must be greater than 0");
+        }
+
+        if self.runtime.health_check_timeout_ms == 0 {
+            bail!("health_check_timeout_ms must be greater than 0");
+        }
+
+        if self.runtime.health_check_fail_threshold == 0 {
+            bail!("health_check_fail_threshold must be greater than 0");
+        }
+
+        if self.runtime.health_check_success_threshold == 0 {
+            bail!("health_check_success_threshold must be greater than 0");
+        }
+
+        if self.runtime.backend_connect_timeout_ms == 0 {
+            bail!("backend_connect_timeout_ms must be greater than 0");
+        }
+
+        if self.runtime.failover_backoff_initial_ms == 0 {
+            bail!("failover_backoff_initial_ms must be greater than 0");
+        }
+
+        if self.runtime.failover_backoff_max_ms < self.runtime.failover_backoff_initial_ms {
+            bail!("failover_backoff_max_ms must be >= failover_backoff_initial_ms");
+        }
+
+        if self.runtime.protection_trigger_threshold == 0 {
+            bail!("protection_trigger_threshold must be greater than 0");
+        }
+
+        if self.runtime.protection_window_ms == 0 {
+            bail!("protection_window_ms must be greater than 0");
+        }
+
+        if self.runtime.protection_stable_success_threshold == 0 {
+            bail!("protection_stable_success_threshold must be greater than 0");
+        }
+
+        if self.runtime.max_concurrent_connections == 0 {
+            bail!("max_concurrent_connections must be greater than 0");
+        }
+
+        if self.runtime.connection_idle_timeout_ms == 0 {
+            bail!("connection_idle_timeout_ms must be greater than 0");
+        }
+
         Ok(())
     }
 
     /// Generate default configuration file template
     pub fn default_template() -> String {
-        r#"# bal service port
+        r#"mode: "simple"
+
+# simple: core fields only (recommended)
+# advanced: exposes all runtime tuning knobs
+
+# bal service port
 port: 9295
 
 # Load balancing method
@@ -213,6 +531,24 @@ method: "round_robin"
 
 # Log level (debug, info, warn, error)
 log_level: "info"
+
+# Bind address for listener
+bind_address: "0.0.0.0"
+
+# Runtime tuning knobs (advanced mode)
+# mode: advanced
+# runtime:
+#   health_check_interval_ms: 200
+#   health_check_timeout_ms: 500
+#   health_check_fail_threshold: 1
+#   health_check_success_threshold: 1
+#   backend_connect_timeout_ms: 500
+#   failover_backoff_initial_ms: 100
+#   failover_backoff_max_ms: 5000
+#   backend_cooldown_ms: 300
+#   max_concurrent_connections: 10000
+#   connection_idle_timeout_ms: 120000
+#   overload_policy: "reject"
 
 # Backend server list
 backends:
@@ -272,9 +608,37 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
     // Load and parse
     let config = Config::load_from_file(&path).await?;
 
-    println!("  - Listen port: {}", config.port);
+    println!(
+        "  - Mode: {}",
+        match config.mode {
+            ConfigMode::Simple => "simple",
+            ConfigMode::Advanced => "advanced",
+        }
+    );
+    println!("  - Listen: {}:{}", config.bind_address, config.port);
     println!("  - Load balancing: {:?}", config.method);
     println!("  - Log level: {}", config.log_level);
+    if config.mode == ConfigMode::Advanced {
+        println!(
+            "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms protection_trigger={} protection_window={}ms protection_recover={} max_conns={} idle_timeout={}ms overload_policy={}",
+            config.runtime.health_check_interval_ms,
+            config.runtime.health_check_timeout_ms,
+            config.runtime.health_check_fail_threshold,
+            config.runtime.health_check_success_threshold,
+            config.runtime.backend_connect_timeout_ms,
+            config.runtime.failover_backoff_initial_ms,
+            config.runtime.failover_backoff_max_ms,
+            config.runtime.backend_cooldown_ms,
+            config.runtime.protection_trigger_threshold,
+            config.runtime.protection_window_ms,
+            config.runtime.protection_stable_success_threshold,
+            config.runtime.max_concurrent_connections,
+            config.runtime.connection_idle_timeout_ms,
+            match config.runtime.overload_policy { OverloadPolicy::Reject => "reject" },
+        );
+    } else {
+        println!("  - Runtime: auto-tuned safe defaults (switch to mode=advanced to customize)");
+    }
     println!("  - Number of backends: {}", config.backends.len());
 
     // Validate backend connectivity
@@ -317,5 +681,100 @@ mod tests {
             .await
             .expect("hostname should resolve");
         assert_eq!(resolved.port(), 80);
+    }
+
+    #[test]
+    fn parse_config_applies_simple_mode_and_auto_tuned_runtime_when_runtime_omitted() {
+        let yaml = r#"
+port: 9295
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
+
+        assert_eq!(config.mode, ConfigMode::Simple);
+        assert_eq!(config.bind_address, "0.0.0.0");
+        assert_eq!(config.runtime.health_check_interval_ms, 500);
+        assert_eq!(config.runtime.health_check_timeout_ms, 800);
+        assert_eq!(config.runtime.health_check_fail_threshold, 2);
+        assert_eq!(config.runtime.health_check_success_threshold, 1);
+        assert_eq!(config.runtime.backend_connect_timeout_ms, 800);
+        assert_eq!(config.runtime.failover_backoff_initial_ms, 200);
+        assert_eq!(config.runtime.failover_backoff_max_ms, 5000);
+        assert_eq!(config.runtime.backend_cooldown_ms, 500);
+        assert_eq!(config.runtime.max_concurrent_connections, 4000);
+        assert_eq!(config.runtime.connection_idle_timeout_ms, 120000);
+    }
+
+    #[test]
+    fn parse_config_overrides_runtime_and_bind_settings() {
+        let yaml = r#"
+mode: "advanced"
+port: 9295
+bind_address: "127.0.0.1"
+runtime:
+  health_check_interval_ms: 750
+  health_check_timeout_ms: 1200
+  health_check_fail_threshold: 3
+  health_check_success_threshold: 2
+  backend_connect_timeout_ms: 900
+  failover_backoff_initial_ms: 150
+  failover_backoff_max_ms: 2000
+  backend_cooldown_ms: 700
+  max_concurrent_connections: 321
+  connection_idle_timeout_ms: 33000
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
+
+        assert_eq!(config.mode, ConfigMode::Advanced);
+        assert_eq!(config.bind_address, "127.0.0.1");
+        assert_eq!(config.runtime.health_check_interval_ms, 750);
+        assert_eq!(config.runtime.health_check_timeout_ms, 1200);
+        assert_eq!(config.runtime.health_check_fail_threshold, 3);
+        assert_eq!(config.runtime.health_check_success_threshold, 2);
+        assert_eq!(config.runtime.backend_connect_timeout_ms, 900);
+        assert_eq!(config.runtime.failover_backoff_initial_ms, 150);
+        assert_eq!(config.runtime.failover_backoff_max_ms, 2000);
+        assert_eq!(config.runtime.backend_cooldown_ms, 700);
+        assert_eq!(config.runtime.max_concurrent_connections, 321);
+        assert_eq!(config.runtime.connection_idle_timeout_ms, 33000);
+    }
+
+    #[test]
+    fn parse_config_auto_tuning_scales_conservatively_with_backend_count() {
+        let yaml = r#"
+port: 9295
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+  - host: "127.0.0.1"
+    port: 9001
+  - host: "127.0.0.1"
+    port: 9002
+  - host: "127.0.0.1"
+    port: 9003
+  - host: "127.0.0.1"
+    port: 9004
+  - host: "127.0.0.1"
+    port: 9005
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
+
+        assert_eq!(config.runtime.health_check_interval_ms, 1000);
+        assert_eq!(config.runtime.health_check_timeout_ms, 1200);
+        assert_eq!(config.runtime.health_check_fail_threshold, 3);
+        assert_eq!(config.runtime.health_check_success_threshold, 2);
+        assert_eq!(config.runtime.backend_connect_timeout_ms, 1200);
+        assert_eq!(config.runtime.failover_backoff_initial_ms, 500);
+        assert_eq!(config.runtime.failover_backoff_max_ms, 10000);
+        assert_eq!(config.runtime.backend_cooldown_ms, 1000);
+        assert_eq!(config.runtime.max_concurrent_connections, 12000);
     }
 }

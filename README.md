@@ -7,6 +7,16 @@
 
 bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정 교체를 지원합니다.
 
+## 5분 시작 (권장: simple mode)
+
+1. `bal start` 실행 (없으면 `~/.bal/config.yaml` 자동 생성)
+2. config에 `mode: "simple"` 유지 + `backends`만 채우기
+3. `bal check`로 검증
+4. `bal start -d`로 데몬 실행
+5. `bal status`와 `bal doctor`로 상태 점검
+
+`simple` 모드는 운영에 필요한 핵심 필드만 노출해 실수를 줄입니다. 세부 런타임 튜닝이 필요할 때만 `mode: "advanced"`로 전환하세요.
+
 ## 주요 기능
 
 - **SSL Passthrough**: L4 레벨에서 패킷을 투명하게 전달하여 백엔드에서 SSL 인증서 처리
@@ -51,38 +61,6 @@ cargo build --release
 
 # 바이너리 복사
 sudo cp target/release/bal /usr/local/bin/
-```
-
-### 빠른 설치
-
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
-```
-
-지원 환경:
-- macOS (Apple Silicon)
-- Linux (x86_64, i386)
-
-### 소스에서 빌드
-
-```bash
-# 소스에서 빌드
-git clone https://github.com/parkjangwon/bal
-cd bal
-cargo build --release
-
-# 바이너리 복사
-cp target/release/bal /usr/local/bin/
-```
-
-```bash
-# 소스에서 빌드
-git clone https://github.com/parkjangwon/bal
-cd bal
-cargo build --release
-
-# 바이너리 복사
-cp target/release/bal /usr/local/bin/
 ```
 
 ## 빠른 시작 (테스트)
@@ -149,6 +127,8 @@ bal start
 또는 수동으로 `~/.bal/config.yaml` 생성:
 
 ```yaml
+mode: "simple"
+
 # bal 서비스 포트 (9295: 설계자 지정 유니크 포트)
 port: 9295
 
@@ -170,10 +150,12 @@ bal start                    # 기본 설정으로 시작
 bal start -c /path/to/config.yaml  # 지정된 설정 파일로 시작
 ```
 
-### 3. 설정 검증 (Dry-run)
+### 3. 설정 검증 (정적 검사)
 
 ```bash
-bal check                    # 설정 파일 검증
+bal check                              # 정적 설정 검사(기본)
+bal check --strict                     # 경고도 실패(비정상 종료 코드)
+bal check --json                       # JSON 출력
 bal check -c /path/to/config.yaml
 ```
 
@@ -258,6 +240,155 @@ src/
 - **락 프리 설정 교체**: `arc-swap`으로 원자적 설정 교체
 - **효율적인 메모리 사용**: 단일 바이너리 약 2MB
 - **빠른 시작**: 밀리초 단위 초기화
+
+## 운영 배포 템플릿 (On-prem + VPN + hosts)
+
+예시 `/etc/hosts`:
+
+```txt
+10.10.0.11 app-a.internal
+10.10.0.12 app-b.internal
+```
+
+예시 `~/.bal/config.yaml`:
+
+```yaml
+mode: "advanced"
+port: 9295
+bind_address: "0.0.0.0"
+method: "round_robin"
+log_level: "info"
+
+runtime:
+  health_check_interval_ms: 1000
+  health_check_timeout_ms: 500
+  health_check_fail_threshold: 2
+  health_check_success_threshold: 2
+  backend_connect_timeout_ms: 400
+  failover_backoff_initial_ms: 100
+  failover_backoff_max_ms: 5000
+  backend_cooldown_ms: 500
+  max_concurrent_connections: 20000
+  connection_idle_timeout_ms: 120000
+  overload_policy: "reject"
+  tcp_backlog: 2048
+
+backends:
+  - host: "app-a.internal"
+    port: 443
+  - host: "app-b.internal"
+    port: 443
+```
+
+## 서비스 등록 예시
+
+### systemd (Linux)
+
+`/etc/systemd/system/bal.service`
+
+```ini
+[Unit]
+Description=bal TCP Load Balancer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bal
+Group=bal
+ExecStart=/usr/local/bin/bal start -c /home/bal/.bal/config.yaml
+ExecReload=/usr/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now bal
+sudo systemctl status bal
+```
+
+### launchd (macOS)
+
+`~/Library/LaunchAgents/com.bal.daemon.plist`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bal.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/bal</string>
+    <string>start</string>
+    <string>-c</string>
+    <string>/Users/your-user/.bal/config.yaml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/bal.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/bal.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.bal.daemon.plist
+launchctl list | grep bal
+```
+
+## 명령 경계 (check / doctor / status)
+
+- `bal check`: **정적 설정 검증만** 수행합니다. (기본적으로 네트워크 접속 테스트 안 함)
+- `bal doctor`: 런타임 진단/환경 점검(바인딩 가능 여부, PID/백엔드 도달성 등)
+- `bal status`: 현재 상태 관찰(실행 여부, 설정/백엔드 요약, 보호 모드 상태)
+
+간단 매트릭스:
+
+| 명령어 | 목적 | 기본 출력 | 주요 옵션 |
+|---|---|---|---|
+| `bal check` | 정적 설정 유효성 | 체크 리포트 | `--strict`, `--json` |
+| `bal doctor` | 런타임/환경 진단 | 진단 리포트 | `--brief`, `--json` |
+| `bal status` | 상태 관찰 | 상태 요약 | `--brief`, `--json` |
+
+## 자동 보호 모드 (Protection Mode)
+
+- 트리거: 짧은 시간 내 timeout/refused 오류 폭증 또는 사실상 모든 백엔드 불가용
+- 동작: failover 재시도 공격성을 낮추기 위해 backoff/cooldown을 자동 상향
+- 복구: 안정 성공이 충분히 누적되면 자동 해제(히스테리시스)
+- 노출: `bal status`, `bal doctor`, JSON 출력에 `protection_mode`와 `reason` 표시
+
+## 운영 점검/트러블슈팅 런북
+
+1. 설정 사전 검증
+
+```bash
+bal check -c ~/.bal/config.yaml
+```
+
+2. 런타임 상태 확인
+
+```bash
+bal status
+bal status --json
+```
+
+3. 무중단 리로드
+
+```bash
+bal graceful
+```
+
+4. 증상별 대응
+- `All backends failed`: VPN/hosts/DNS 확인, 백엔드 방화벽/보안그룹 점검
+- 연결이 튄다(Flapping): `backend_cooldown_ms`, `failover_backoff_*` 상향
+- 과부하 시 거절 증가: `max_concurrent_connections`/`tcp_backlog` 조정
+- 리로드 실패: 에러 로그 확인 후 설정 수정, 기존 런타임 설정은 유지됨
 
 ## 라이선스
 

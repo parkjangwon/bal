@@ -10,38 +10,43 @@
 use anyhow::Result;
 use log::info;
 
+mod backend_pool;
+mod check;
 mod cli;
 mod config;
 mod config_store;
-mod load_balancer;
-mod backend_pool;
-mod proxy;
-mod health;
-mod supervisor;
-mod process;
-mod state;
-mod logging;
 mod constants;
+mod doctor;
 mod error;
+mod health;
+mod load_balancer;
+mod logging;
+mod process;
+mod protection;
+mod proxy;
+mod state;
+mod supervisor;
 
 use cli::{Cli, Commands};
-use process::ProcessManager;
 use config::Config;
+use process::ProcessManager;
 
 /// Application entry point
-/// 
+///
 /// Parses CLI arguments and dispatches to appropriate subcommands.
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
-    
+
     // Determine if running in daemon mode
     let daemon_mode = matches!(cli.command, Commands::Start { daemon: true, .. });
-    
+
     // For Start command, load config first to get log_level
     let log_level = match &cli.command {
-        Commands::Start { config: cli_config, .. } => {
+        Commands::Start {
+            config: cli_config, ..
+        } => {
             // Try to load config to get log_level
             match Config::resolve_config_path(cli_config.as_deref()) {
                 Ok(config_path) => {
@@ -55,12 +60,12 @@ async fn main() -> Result<()> {
         }
         _ => "info".to_string(), // Default for non-start commands
     };
-    
+
     // Initialize logging system with config's log_level
     logging::init_logging(&log_level, daemon_mode)?;
-    
+
     info!("bal v{} starting", env!("CARGO_PKG_VERSION"));
-    
+
     // Dispatch subcommands
     match cli.command {
         Commands::Start { config, daemon } => {
@@ -84,13 +89,31 @@ async fn main() -> Result<()> {
             info!("Reloading configuration gracefully");
             ProcessManager::send_reload_signal()?;
         }
-        Commands::Check { config } => {
-            // Validate config file (Dry-run)
-            info!("Validating configuration file");
-            config::validate_config_file(config).await?;
-            println!("Configuration file is valid");
+        Commands::Check {
+            config,
+            strict,
+            json,
+        } => {
+            info!("Running static config check");
+            check::run_and_print(config, strict, json).await?;
+        }
+        Commands::Status {
+            config,
+            json,
+            brief,
+        } => {
+            info!("Showing bal state status");
+            ProcessManager::print_status(config, json, brief).await?;
+        }
+        Commands::Doctor {
+            config,
+            json,
+            brief,
+        } => {
+            info!("Running bal doctor diagnostics");
+            doctor::run_and_print(config, json, brief).await?;
         }
     }
-    
+
     Ok(())
 }

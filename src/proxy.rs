@@ -9,11 +9,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::timeout;
 
-use crate::backend_pool::{BackendState, ConnectionGuard};
-use crate::config::BackendConfig;
+use crate::backend_pool::{BackendErrorKind, BackendState, ConnectionGuard};
+use crate::config::{BackendConfig, OverloadPolicy};
+use crate::protection;
 use crate::state::AppState;
 
 /// Proxy server
@@ -35,15 +36,35 @@ impl ProxyServer {
     /// connection asynchronously. Stops accepting new connections on
     /// graceful shutdown signal.
     pub async fn run(&self, shutdown: &mut tokio::sync::broadcast::Receiver<()>) -> Result<()> {
-        let port = self.state.port();
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let config = self.state.config();
+        let listen_addr = format!("{}:{}", config.bind_address, config.port);
 
         // Create TCP listener
-        let listener = TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("Failed to bind to port {}", port))?;
+        let listener = if let Some(backlog) = config.runtime_tuning.tcp_backlog {
+            let socket_addr: std::net::SocketAddr = listen_addr
+                .parse()
+                .with_context(|| format!("Invalid listen address {}", listen_addr))?;
+            let socket = if socket_addr.is_ipv4() {
+                TcpSocket::new_v4().context("Failed to create IPv4 listener socket")?
+            } else {
+                TcpSocket::new_v6().context("Failed to create IPv6 listener socket")?
+            };
+            socket
+                .bind(socket_addr)
+                .with_context(|| format!("Failed to bind to {}", listen_addr))?;
+            socket
+                .listen(backlog)
+                .with_context(|| format!("Failed to listen on {}", listen_addr))?
+        } else {
+            TcpListener::bind(&listen_addr)
+                .await
+                .with_context(|| format!("Failed to bind to {}", listen_addr))?
+        };
 
-        info!("Proxy server started: {} (L4 Passthrough mode)", addr);
+        info!(
+            "Proxy server started: {} (L4 Passthrough mode)",
+            listen_addr
+        );
 
         loop {
             tokio::select! {
@@ -90,15 +111,29 @@ async fn handle_connection(
     client_addr: SocketAddr,
     state: Arc<AppState>,
 ) -> Result<()> {
-    // Increment active connection count
-    state.increment_connections().await;
+    // Increment active connection count with overload protection
+    let runtime_config = state.config();
+    if !state
+        .try_acquire_connection(runtime_config.runtime_tuning.max_concurrent_connections)
+        .await
+    {
+        match runtime_config.runtime_tuning.overload_policy {
+            OverloadPolicy::Reject => {
+                warn!(
+                    "Rejecting client {} due to overload (max_concurrent_connections={})",
+                    client_addr, runtime_config.runtime_tuning.max_concurrent_connections
+                );
+                return Ok(());
+            }
+        }
+    }
 
     // Try to connect to a backend with retry logic
     let (backend, backend_stream, backend_addr) =
         match connect_with_retry(&state, &client_addr).await {
             Ok(result) => result,
             Err(e) => {
-                state.decrement_connections().await;
+                state.release_connection().await;
                 return Err(e);
             }
         };
@@ -112,7 +147,13 @@ async fn handle_connection(
     );
 
     // Bidirectional data copy (L4 Passthrough)
-    match relay_streams(client_stream, backend_stream).await {
+    match relay_streams(
+        client_stream,
+        backend_stream,
+        runtime_config.runtime_tuning.connection_idle_timeout_ms,
+    )
+    .await
+    {
         Ok((client_to_backend, backend_to_client)) => {
             debug!(
                 "Proxy connection closed: {}. Transfer: client->backend {} bytes, backend->client {} bytes",
@@ -125,7 +166,7 @@ async fn handle_connection(
     }
 
     // Decrement active connection count
-    state.decrement_connections().await;
+    state.release_connection().await;
 
     Ok(())
 }
@@ -135,11 +176,26 @@ async fn handle_connection(
 /// 1. First try healthy backends
 /// 2. If all healthy backends fail, try ALL backends including unhealthy ones
 /// 3. On successful connection, immediately mark backend as healthy
-/// 4. Uses 500ms timeout for immediate failover
+/// 4. Uses configured backend connect timeout for immediate failover
 async fn connect_with_retry(
     state: &Arc<AppState>,
     client_addr: &SocketAddr,
 ) -> Result<(Arc<BackendState>, TcpStream, SocketAddr)> {
+    let runtime_config = state.config();
+    let connect_timeout_ms = runtime_config.runtime_tuning.backend_connect_timeout_ms;
+    let fail_threshold = runtime_config.runtime_tuning.health_check_fail_threshold;
+    let success_threshold = runtime_config.runtime_tuning.health_check_success_threshold;
+    let mut backoff_initial_ms = runtime_config.runtime_tuning.failover_backoff_initial_ms;
+    let mut backoff_max_ms = runtime_config.runtime_tuning.failover_backoff_max_ms;
+    let mut cooldown_ms = runtime_config.runtime_tuning.backend_cooldown_ms;
+    let protection_mode = state.protection_mode();
+
+    if protection_mode.is_enabled() {
+        backoff_initial_ms = backoff_initial_ms.saturating_mul(2);
+        backoff_max_ms = backoff_max_ms.saturating_mul(2);
+        cooldown_ms = cooldown_ms.saturating_mul(2);
+    }
+
     let load_balancer = state.load_balancer();
     let pool = &state.backend_pool();
 
@@ -161,6 +217,16 @@ async fn connect_with_retry(
                 None => break,
             };
 
+            if backend.is_in_cooldown() {
+                debug!(
+                    "Backend {}:{} is in cooldown until {}",
+                    backend.config.host,
+                    backend.config.port,
+                    backend.cooldown_until_ms()
+                );
+                continue;
+            }
+
             let backend_addr = match backend.config.resolve_socket_addr().await {
                 Ok(addr) => addr,
                 Err(e) => {
@@ -176,7 +242,7 @@ async fn connect_with_retry(
 
             // Try to connect with ultra-short timeout for immediate failover
             match timeout(
-                Duration::from_millis(500), // 500ms timeout for instant failover
+                Duration::from_millis(connect_timeout_ms),
                 TcpStream::connect(&backend_addr),
             )
             .await
@@ -189,6 +255,10 @@ async fn connect_with_retry(
                             client_addr, backend_addr, attempt
                         );
                     }
+                    backend.mark_connect_success(success_threshold);
+                    if protection_mode.record_success() {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
                     return Ok((backend, stream, backend_addr));
                 }
                 Ok(Err(e)) => {
@@ -196,17 +266,34 @@ async fn connect_with_retry(
                         "Backend {}:{} connection failed (attempt {}): {}",
                         backend.config.host, backend.config.port, attempt, e
                     );
-                    // Mark backend as unhealthy immediately
-                    backend.mark_failure(1);
-                    last_error = Some(format!("Connection refused: {}", e));
+                    let kind = classify_connect_error(&e);
+                    backend.mark_connect_failure(
+                        kind,
+                        fail_threshold,
+                        backoff_initial_ms,
+                        backoff_max_ms,
+                        cooldown_ms,
+                    );
+                    if protection_mode.record_failure(kind) {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
+                    last_error = Some(format!("Connection failed: {}", e));
                 }
                 Err(_) => {
                     warn!(
                         "Backend {}:{} connection timeout (attempt {})",
                         backend.config.host, backend.config.port, attempt
                     );
-                    // Mark backend as unhealthy immediately
-                    backend.mark_failure(1);
+                    backend.mark_connect_failure(
+                        BackendErrorKind::Timeout,
+                        fail_threshold,
+                        backoff_initial_ms,
+                        backoff_max_ms,
+                        cooldown_ms,
+                    );
+                    if protection_mode.record_failure(BackendErrorKind::Timeout) {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
                     last_error = Some("Connection timeout".to_string());
                 }
             }
@@ -222,6 +309,14 @@ async fn connect_with_retry(
             Err(_) => continue,
         };
 
+        if backend.is_in_cooldown() {
+            debug!(
+                "Skipping backend {}:{} due to cooldown",
+                backend.config.host, backend.config.port
+            );
+            continue;
+        }
+
         debug!(
             "Trying backend {}:{} (healthy={})",
             backend.config.host,
@@ -230,15 +325,19 @@ async fn connect_with_retry(
         );
 
         match timeout(
-            Duration::from_millis(500),
+            Duration::from_millis(connect_timeout_ms),
             TcpStream::connect(&backend_addr),
         )
         .await
         {
             Ok(Ok(stream)) => {
                 // Success! Immediately mark as healthy
-                if !backend.is_healthy() {
-                    backend.mark_success(1);
+                let was_healthy = backend.is_healthy();
+                backend.mark_connect_success(success_threshold);
+                if protection_mode.record_success() {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
+                if !was_healthy {
                     info!(
                         "Backend {}:{} recovered and serving traffic immediately!",
                         backend.config.host, backend.config.port
@@ -246,16 +345,39 @@ async fn connect_with_retry(
                 }
                 return Ok((Arc::clone(backend), stream, backend_addr));
             }
-            Ok(Err(_)) => {
-                backend.mark_failure(1);
+            Ok(Err(e)) => {
+                let kind = classify_connect_error(&e);
+                backend.mark_connect_failure(
+                    kind,
+                    fail_threshold,
+                    backoff_initial_ms,
+                    backoff_max_ms,
+                    cooldown_ms,
+                );
+                if protection_mode.record_failure(kind) {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
             }
             Err(_) => {
-                backend.mark_failure(1);
+                backend.mark_connect_failure(
+                    BackendErrorKind::Timeout,
+                    fail_threshold,
+                    backoff_initial_ms,
+                    backoff_max_ms,
+                    cooldown_ms,
+                );
+                if protection_mode.record_failure(BackendErrorKind::Timeout) {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
             }
         }
     }
 
     // All backends failed
+    if protection_mode.record_global_unavailable() {
+        protection::write_snapshot(&protection_mode.snapshot());
+    }
+
     bail!(
         "All {} backends failed. Last error: {}",
         all_backends.len(),
@@ -273,13 +395,34 @@ fn track_backend_connection(backend: Arc<BackendState>) -> ConnectionGuard {
 /// transfer between client and backend.
 ///
 /// Uses kernel-level zero-copy for high performance.
-async fn relay_streams(mut client: TcpStream, mut backend: TcpStream) -> Result<(u64, u64)> {
-    // Perform bidirectional copy
-    let (client_to_backend, backend_to_client) = io::copy_bidirectional(&mut client, &mut backend)
-        .await
-        .context("Bidirectional data relay failed")?;
+async fn relay_streams(
+    mut client: TcpStream,
+    mut backend: TcpStream,
+    idle_timeout_ms: u64,
+) -> Result<(u64, u64)> {
+    let relay = io::copy_bidirectional(&mut client, &mut backend);
+    let (client_to_backend, backend_to_client) =
+        timeout(Duration::from_millis(idle_timeout_ms), relay)
+            .await
+            .context("Connection idle timeout reached")?
+            .context("Bidirectional data relay failed")?;
 
     Ok((client_to_backend, backend_to_client))
+}
+
+fn classify_connect_error(err: &std::io::Error) -> BackendErrorKind {
+    if err.kind() == std::io::ErrorKind::TimedOut {
+        return BackendErrorKind::Timeout;
+    }
+
+    if err.kind() == std::io::ErrorKind::ConnectionRefused {
+        return BackendErrorKind::ConnectionRefused;
+    }
+
+    match err.raw_os_error() {
+        Some(61) | Some(111) => BackendErrorKind::ConnectionRefused,
+        _ => BackendErrorKind::Other,
+    }
 }
 
 /// Test backend connection

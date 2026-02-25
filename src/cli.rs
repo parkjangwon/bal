@@ -30,13 +30,15 @@ Usage Examples:
   bal start -c /path/config.yaml  # Start with specified config file
   bal stop                     # Stop running daemon
   bal graceful                 # Reload config without downtime
-  bal check                    # Validate configuration file
+  bal check                    # Validate static configuration
+  bal doctor                   # Run runtime diagnostics/environment checks
+  bal status                   # Observe local state summary
 "#,
     version = env!("CARGO_PKG_VERSION"),
     author = "bal Team"
 )]
 pub struct Cli {
-    /// Subcommand (start, stop, graceful, check)
+    /// Subcommand (start, stop, graceful, check, status, doctor)
     #[command(subcommand)]
     pub command: Commands,
 
@@ -85,15 +87,12 @@ pub enum Commands {
     #[command(name = "graceful", about = "Reload configuration without downtime")]
     Graceful,
 
-    /// Validate configuration file (Dry-run)
+    /// Validate static configuration
     ///
-    /// Validates configuration file syntax and backend connectivity.
-    /// Does not start the actual service, only checks for problems.
-    #[command(name = "check", about = "Validate configuration file")]
+    /// Validates configuration syntax and static constraints only.
+    #[command(name = "check", about = "Validate static configuration")]
     Check {
         /// Configuration file path to validate
-        ///
-        /// If not specified, uses default config file search paths.
         #[arg(
             short,
             long,
@@ -101,6 +100,56 @@ pub enum Commands {
             help = "Configuration file path to validate"
         )]
         config: Option<PathBuf>,
+
+        /// Treat warnings as errors (non-zero exit)
+        #[arg(long, help = "Return non-zero when warnings are present")]
+        strict: bool,
+
+        /// Print check report in JSON format
+        #[arg(long, help = "Print check report in JSON format")]
+        json: bool,
+    },
+
+    /// Observe local process and backend state
+    #[command(name = "status", about = "Observe local process/backend state")]
+    Status {
+        /// Configuration file path used for backend summary
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Configuration file path for status summary"
+        )]
+        config: Option<PathBuf>,
+
+        /// Print status in JSON format
+        #[arg(long, help = "Print status in JSON format")]
+        json: bool,
+
+        /// Print compact status output
+        #[arg(long, help = "Print compact status output")]
+        brief: bool,
+    },
+
+    /// Run runtime diagnostics and environment checks
+    #[command(name = "doctor", about = "Run runtime diagnostics/environment checks")]
+    Doctor {
+        /// Configuration file path used for diagnostics
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Configuration file path for diagnostics"
+        )]
+        config: Option<PathBuf>,
+
+        /// Print diagnostics in JSON format
+        #[arg(long, help = "Print diagnostics in JSON format")]
+        json: bool,
+
+        /// Print compact diagnostics output
+        #[arg(long, help = "Print compact diagnostics output")]
+        brief: bool,
     },
 }
 
@@ -108,5 +157,47 @@ impl Cli {
     /// Parse CLI arguments and create Cli struct
     pub fn parse_args() -> Self {
         Self::parse()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn check_accepts_strict_and_json_flags() {
+        let cli = Cli::try_parse_from(["bal", "check", "--strict", "--json"])
+            .expect("check command should parse");
+
+        match cli.command {
+            Commands::Check { strict, json, .. } => {
+                assert!(strict);
+                assert!(json);
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn status_accepts_brief_flag() {
+        let cli =
+            Cli::try_parse_from(["bal", "status", "--brief"]).expect("status command should parse");
+
+        match cli.command {
+            Commands::Status { brief, .. } => assert!(brief),
+            _ => panic!("expected status command"),
+        }
+    }
+
+    #[test]
+    fn doctor_accepts_brief_flag() {
+        let cli =
+            Cli::try_parse_from(["bal", "doctor", "--brief"]).expect("doctor command should parse");
+
+        match cli.command {
+            Commands::Doctor { brief, .. } => assert!(brief),
+            _ => panic!("expected doctor command"),
+        }
     }
 }

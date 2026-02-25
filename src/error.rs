@@ -6,7 +6,7 @@
 use std::io;
 
 /// Main error types for bal application
-/// 
+///
 /// Each error clearly expresses the context where it occurred (config, network,
 /// process, etc.) to reduce problem resolution time.
 #[derive(Debug)]
@@ -53,15 +53,15 @@ impl<T> ResultExt<T> for anyhow::Result<T> {
     fn context_config(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Config(msg.to_string()), e))
     }
-    
+
     fn context_network(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Network(msg.to_string()), e))
     }
-    
+
     fn context_process(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Process(msg.to_string()), e))
     }
-    
+
     fn context_backend(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Backend(msg.to_string()), e))
     }
@@ -71,26 +71,26 @@ impl<T> ResultExt<T> for io::Result<T> {
     fn context_config(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Config(msg.to_string()), e))
     }
-    
+
     fn context_network(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Network(msg.to_string()), e))
     }
-    
+
     fn context_process(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Process(msg.to_string()), e))
     }
-    
+
     fn context_backend(self, msg: &str) -> anyhow::Result<T> {
         self.map_err(|e| anyhow::anyhow!("{}: {}", BalError::Backend(msg.to_string()), e))
     }
 }
 
 /// Generate user-friendly error message
-/// 
+///
 /// Converts internal errors into messages users can understand and act upon.
 pub fn format_user_error(error: &anyhow::Error) -> String {
     let error_str = error.to_string();
-    
+
     // Convert common error patterns to user-friendly messages
     if error_str.contains("Connection refused") {
         "Cannot connect to backend server. Please check if the server is running.".to_string()
