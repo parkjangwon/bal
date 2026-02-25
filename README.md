@@ -18,7 +18,7 @@ bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정
 
 ```bash
 # 소스에서 빌드
-git clone https://github.com/bal/bal
+git clone https://github.com/parkjangwon/bal
 cd bal
 cargo build --release
 
