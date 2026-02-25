@@ -16,6 +16,50 @@ bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정
 
 ## 설치
 
+### 빠른 설치 (원라이너)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
+```
+
+지원 환경:
+- macOS (Apple Silicon)
+- Linux (x86_64, i386)
+
+### 업데이트
+
+이미 설치된 경우, 동일한 명령어로 최신 버전으로 업데이트할 수 있습니다:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
+```
+
+### 삭제
+
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
+```
+
+또는 install.sh를 다운로드한 경우:
+
+```bash
+./install.sh --uninstall
+```
+
+삭제 시 `y/n` 컨펌을 통해 안전하게 서비스를 중지하고 바이너리와 설정 파일을 제거합니다.
+
+### 소스에서 빌드
+
+```bash
+# 소스에서 빌드
+git clone https://github.com/parkjangwon/bal
+cd bal
+cargo build --release
+
+# 바이너리 복사
+sudo cp target/release/bal /usr/local/bin/
+```
+
 ### 빠른 설치
 
 ```bash
