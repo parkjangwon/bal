@@ -17,11 +17,11 @@ pub const DEFAULT_PORT: u16 = 9295;
 
 /// Health check settings
 ///
-/// Check backend status every 5 seconds to quickly detect failures while
-/// minimizing network overhead.
-pub const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
-pub const HEALTH_CHECK_TIMEOUT_SECS: u64 = 1;
-pub const HEALTH_CHECK_MAX_RETRIES: u32 = 3;
+/// Ultra-fast failover: 200ms interval for sub-second detection and recovery.
+pub const HEALTH_CHECK_INTERVAL_MS: u64 = 200;
+pub const HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
+pub const HEALTH_CHECK_MAX_RETRIES: u32 = 1;
+pub const HEALTH_CHECK_MIN_SUCCESS: u32 = 1;
 
 /// Connection settings
 ///

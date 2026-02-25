@@ -6,6 +6,7 @@
 use anyhow::{Result, Context, bail};
 use log::{info, debug, error, warn};
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io;
@@ -14,7 +15,6 @@ use tokio::time::timeout;
 
 use crate::backend_pool::{ConnectionGuard, BackendState};
 use crate::config::BackendConfig;
-use crate::constants::BACKEND_CONNECT_TIMEOUT_SECS;
 use crate::load_balancer::LoadBalancer;
 use crate::state::AppState;
 
@@ -132,10 +132,12 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Connect to backend with retry logic
+/// Connect to backend with ultra-fast failover
 /// 
-/// If the first selected backend fails, immediately try the next one.
-/// This ensures failover happens within milliseconds, not seconds.
+/// 1. First try healthy backends
+/// 2. If all healthy backends fail, try ALL backends including unhealthy ones
+/// 3. On successful connection, immediately mark backend as healthy
+/// 4. Uses 500ms timeout for immediate failover
 async fn connect_with_retry(
     state: &Arc<AppState>,
     client_addr: &SocketAddr,
@@ -145,66 +147,101 @@ async fn connect_with_retry(
     
     // Get list of healthy backends
     let healthy_backends = pool.healthy_backends();
+    let all_backends = pool.all_backends();
     
-    if healthy_backends.is_empty() {
-        bail!("No healthy backends available");
+    if all_backends.is_empty() {
+        bail!("No backends configured");
     }
     
-    // Try each backend in order until one succeeds
+    // Try healthy backends first
     let mut last_error = None;
-    let max_attempts = healthy_backends.len();
     
-    for attempt in 1..=max_attempts {
-        // Select next backend using round robin
-        let backend = match load_balancer.select_backend() {
-            Some(b) => b,
-            None => {
-                bail!("No healthy backends available during retry");
+    if !healthy_backends.is_empty() {
+        for attempt in 1..=healthy_backends.len() {
+            let backend = match load_balancer.select_backend() {
+                Some(b) => b,
+                None => break,
+            };
+            
+            let backend_addr = match backend.config.to_socket_addr() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    warn!("Invalid backend address: {}", e);
+                    continue;
+                }
+            };
+            
+            debug!("Connection attempt {} to healthy backend: {} -> {}", attempt, client_addr, backend_addr);
+            
+            // Try to connect with ultra-short timeout for immediate failover
+            match timeout(
+                Duration::from_millis(500), // 500ms timeout for instant failover
+                TcpStream::connect(&backend_addr)
+            ).await {
+                Ok(Ok(stream)) => {
+                    // Success!
+                    if attempt > 1 {
+                        info!(
+                            "Failover successful: {} -> {} (after {} attempts)",
+                            client_addr, backend_addr, attempt
+                        );
+                    }
+                    return Ok((backend, stream, backend_addr));
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "Backend {}:{} connection failed (attempt {}): {}",
+                        backend.config.host, backend.config.port, attempt, e
+                    );
+                    // Mark backend as unhealthy immediately
+                    backend.mark_failure(1);
+                    last_error = Some(format!("Connection refused: {}", e));
+                }
+                Err(_) => {
+                    warn!(
+                        "Backend {}:{} connection timeout (attempt {})",
+                        backend.config.host, backend.config.port, attempt
+                    );
+                    // Mark backend as unhealthy immediately
+                    backend.mark_failure(1);
+                    last_error = Some("Connection timeout".to_string());
+                }
             }
-        };
-        
+        }
+    }
+    
+    // If all healthy backends failed, try ALL backends (including unhealthy ones)
+    info!("All healthy backends failed. Trying all backends including unhealthy ones...");
+    
+    for backend in all_backends {
         let backend_addr = match backend.config.to_socket_addr() {
             Ok(addr) => addr,
-            Err(e) => {
-                warn!("Invalid backend address: {}", e);
-                continue;
-            }
+            Err(_) => continue,
         };
         
-        debug!("Connection attempt {}: {} -> {}", attempt, client_addr, backend_addr);
+        debug!("Trying backend {}:{} (healthy={})", 
+            backend.config.host, backend.config.port, backend.is_healthy());
         
-        // Try to connect with short timeout for quick failover
         match timeout(
-            Duration::from_secs(2), // Shorter timeout for quick failover
+            Duration::from_millis(500),
             TcpStream::connect(&backend_addr)
         ).await {
             Ok(Ok(stream)) => {
-                // Success!
-                if attempt > 1 {
+                // Success! Immediately mark as healthy
+                if !backend.is_healthy() {
+                    backend.mark_success(1);
                     info!(
-                        "Failover successful: {} -> {} (after {} attempts)",
-                        client_addr, backend_addr, attempt
+                        "Backend {}:{} recovered and serving traffic immediately!",
+                        backend.config.host, backend.config.port
                     );
                 }
-                return Ok((backend, stream, backend_addr));
+                return Ok((Arc::clone(backend), stream, backend_addr));
             }
-            Ok(Err(e)) => {
-                warn!(
-                    "Backend {}:{} connection failed (attempt {}): {}",
-                    backend.config.host, backend.config.port, attempt, e
-                );
-                // Mark backend as unhealthy immediately
-                backend.mark_failure(1); // 1 failure = immediately mark unhealthy
-                last_error = Some(format!("Connection refused: {}", e));
+            Ok(Err(_)) => {
+                backend.mark_failure(1);
             }
             Err(_) => {
-                warn!(
-                    "Backend {}:{} connection timeout (attempt {})",
-                    backend.config.host, backend.config.port, attempt
-                );
-                // Mark backend as unhealthy immediately
                 backend.mark_failure(1);
-                last_error = Some("Connection timeout".to_string());
             }
         }
     }
@@ -212,7 +249,7 @@ async fn connect_with_retry(
     // All backends failed
     bail!(
         "All {} backends failed. Last error: {}",
-        max_attempts,
+        all_backends.len(),
         last_error.unwrap_or_else(|| "Unknown error".to_string())
     );
 }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::{interval, timeout};
 
-use crate::constants::{HEALTH_CHECK_INTERVAL_SECS, HEALTH_CHECK_TIMEOUT_SECS, HEALTH_CHECK_MAX_RETRIES};
+use crate::constants::{HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_TIMEOUT_MS, HEALTH_CHECK_MAX_RETRIES, HEALTH_CHECK_MIN_SUCCESS};
 use crate::state::AppState;
 
 /// Health check manager
@@ -32,11 +32,11 @@ impl HealthChecker {
     /// Periodically checks all backends, logging state changes.
     /// Exits loop on shutdown signal.
     pub async fn run(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
-        let mut ticker = interval(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
+        let mut ticker = interval(Duration::from_millis(HEALTH_CHECK_INTERVAL_MS));
         
         info!(
-            "Health check started: {} second interval, {} second timeout",
-            HEALTH_CHECK_INTERVAL_SECS, HEALTH_CHECK_TIMEOUT_SECS
+            "Health check started: {}ms interval, {}ms timeout",
+            HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_TIMEOUT_MS
         );
         
         // First check runs immediately
@@ -83,14 +83,14 @@ impl HealthChecker {
                 
                 // TCP connection test
                 let result = timeout(
-                    Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS),
+                    Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
                     TcpStream::connect(&addr)
                 ).await;
                 
                 match result {
                     Ok(Ok(_)) => {
                         // Connection success
-                        backend.mark_success(2); // Recover after 2 consecutive successes
+                        backend.mark_success(HEALTH_CHECK_MIN_SUCCESS);
                     }
                     Ok(Err(e)) => {
                         // Connection failure
@@ -126,7 +126,7 @@ impl HealthChecker {
         let addr = format!("{}:{}", host, port);
         
         match timeout(
-            Duration::from_secs(HEALTH_CHECK_TIMEOUT_SECS),
+            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
             TcpStream::connect(&addr)
         ).await {
             Ok(Ok(_)) => Ok(true),
