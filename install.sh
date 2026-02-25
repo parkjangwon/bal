@@ -32,28 +32,46 @@ get_installed_version() {
 
 # Uninstall bal
 uninstall_bal() {
-    echo -e "${YELLOW}This will uninstall bal and remove all configuration files.${NC}"
-    echo "Configuration directory: $CONFIG_DIR"
-    echo ""
-    read -p "Do you want to continue? [y/N] " -n 1 -r
+    local force=$1
+    
+    # Check if running in terminal (tty)
+    if [[ "$force" != "true" ]] && [[ ! -t 0 ]]; then
+        echo -e "${RED}Error: Cannot prompt for confirmation in non-terminal mode.${NC}"
+        echo "Please download the script and run locally:"
+        echo "  curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh"
+        echo "  chmod +x install.sh"
+        echo "  ./install.sh --uninstall"
+        echo ""
+        echo "Or use --force to skip confirmation:"
+        echo "  ./install.sh --uninstall --force"
+        exit 1
+    fi
+    
+    echo -e "${YELLOW}This will uninstall bal.${NC}"
+    echo "Config folder: $CONFIG_DIR"
     echo ""
     
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Uninstall cancelled."
-        exit 0
+    if [[ "$force" != "true" ]]; then
+        read -p "Continue? [y/N] " -n 1 -r
+        echo ""
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
     fi
     
     # Check if bal is running and stop it
     if [[ -f "$PID_FILE" ]]; then
         PID=$(cat "$PID_FILE" 2>/dev/null)
         if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
-            echo "Stopping running bal service (PID: $PID)..."
+            echo "Stopping bal service (PID: $PID)..."
             "$BINARY_NAME" stop 2>/dev/null || kill "$PID" 2>/dev/null || true
             sleep 1
             
             # Force kill if still running
             if kill -0 "$PID" 2>/dev/null; then
-                echo "Force stopping bal service..."
+                echo "Force stopping..."
                 kill -9 "$PID" 2>/dev/null || true
             fi
         fi
@@ -63,29 +81,37 @@ uninstall_bal() {
     if [[ -w "$INSTALL_DIR" ]]; then
         SUDO=""
     else
-        echo "Uninstall requires sudo access..."
+        echo "Need sudo access..."
         SUDO="sudo"
     fi
     
     # Remove binary
     if [[ -f "$INSTALL_DIR/$BINARY_NAME" ]]; then
-        echo "Removing $BINARY_NAME from $INSTALL_DIR..."
+        echo "Removing $BINARY_NAME..."
         $SUDO rm -f "$INSTALL_DIR/$BINARY_NAME"
     fi
     
     # Ask about config removal
-    read -p "Remove configuration directory ($CONFIG_DIR)? [y/N] " -n 1 -r
-    echo ""
-    
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if [[ "$force" != "true" ]]; then
+        read -p "Remove config folder ($CONFIG_DIR)? [y/N] " -n 1 -r
+        echo ""
+        
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if [[ -d "$CONFIG_DIR" ]]; then
+                echo "Removing config folder..."
+                rm -rf "$CONFIG_DIR"
+            fi
+        fi
+    else
+        # In force mode, remove config folder automatically
         if [[ -d "$CONFIG_DIR" ]]; then
-            echo "Removing configuration directory..."
+            echo "Removing config folder..."
             rm -rf "$CONFIG_DIR"
         fi
     fi
     
     echo ""
-    echo -e "${GREEN}✓ bal has been uninstalled.${NC}"
+    echo -e "${GREEN}Done! bal is removed.${NC}"
 }
 
 # Show help
@@ -93,33 +119,54 @@ show_help() {
     echo "bal installer"
     echo ""
     echo "Usage:"
-    echo "  install.sh              Install or update bal"
-    echo "  install.sh --uninstall  Uninstall bal"
-    echo "  install.sh --help       Show this help message"
+    echo "  install.sh                     Install or update bal"
+    echo "  install.sh --uninstall         Uninstall bal (asks for confirmation)"
+    echo "  install.sh --uninstall --force Uninstall without asking"
+    echo "  install.sh --help              Show this help"
     echo ""
     echo "Options:"
-    echo "  --uninstall    Remove bal binary and optionally config files"
-    echo "  --help         Show this help message"
+    echo "  --uninstall    Remove bal"
+    echo "  --force, -f    Skip confirmation (use with --uninstall)"
+    echo "  --help, -h     Show help"
 }
 
 # Parse arguments
-if [[ "$1" == "--uninstall" ]]; then
+FORCE=false
+
+# Check for force flag anywhere in arguments
+for arg in "$@"; do
+    if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
+        FORCE=true
+        break
+    fi
+done
+
+# Filter out force arguments
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" != "--force" && "$arg" != "-f" ]]; then
+        ARGS+=("$arg")
+    fi
+done
+
+# Handle commands
+if [[ "${ARGS[0]}" == "--uninstall" ]]; then
     if ! check_existing_installation; then
         echo -e "${RED}bal is not installed.${NC}"
         exit 1
     fi
-    uninstall_bal
+    uninstall_bal "$FORCE"
     exit 0
 fi
 
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+if [[ "${ARGS[0]}" == "--help" || "${ARGS[0]}" == "-h" ]]; then
     show_help
     exit 0
 fi
 
-if [[ -n "$1" ]]; then
-    echo "Unknown option: $1"
-    echo "Run 'install.sh --help' for usage information."
+if [[ -n "${ARGS[0]}" ]]; then
+    echo "Unknown option: ${ARGS[0]}"
+    echo "Run './install.sh --help' for usage."
     exit 1
 fi
 
@@ -172,7 +219,7 @@ if check_existing_installation; then
     INSTALLED_VERSION=$(get_installed_version)
     IS_UPDATE=true
     echo -e "${YELLOW}bal is already installed (version: $INSTALLED_VERSION)${NC}"
-    echo "This will update bal to the latest version."
+    echo "This will update to the latest version."
     echo ""
 fi
 
@@ -245,9 +292,9 @@ if command -v "$BINARY_NAME" &> /dev/null; then
     NEW_VERSION=$("$BINARY_NAME" --version 2>/dev/null | awk '{print $2}')
     echo ""
     if [[ "$IS_UPDATE" == true ]]; then
-        echo -e "${GREEN}✓ bal updated successfully! ($INSTALLED_VERSION → $NEW_VERSION)${NC}"
+        echo -e "${GREEN}Updated! ($INSTALLED_VERSION → $NEW_VERSION)${NC}"
     else
-        echo -e "${GREEN}✓ bal installed successfully! (version: $NEW_VERSION)${NC}"
+        echo -e "${GREEN}Installed! (version: $NEW_VERSION)${NC}"
     fi
     echo ""
     echo "Usage: bal --help"
@@ -255,10 +302,10 @@ if command -v "$BINARY_NAME" &> /dev/null; then
     # If was running before update, suggest restart
     if [[ "$IS_UPDATE" == true ]] && [[ -f "$PID_FILE" ]]; then
         echo ""
-        echo -e "${YELLOW}Note: bal service was stopped during update.${NC}"
-        echo "Run 'bal start' to start the service again."
+        echo -e "${YELLOW}Note: bal was stopped during update.${NC}"
+        echo "Run 'bal start' to start again."
     fi
 else
-    echo -e "${RED}Installation complete, but $BINARY_NAME is not in your PATH${NC}"
-    echo "You may need to add $INSTALL_DIR to your PATH or restart your shell"
+    echo -e "${RED}Installed, but $BINARY_NAME not found in PATH${NC}"
+    echo "You may need to restart your shell"
 fi

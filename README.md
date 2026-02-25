@@ -36,6 +36,20 @@ curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | ba
 
 ### 삭제
 
+**With confirmation (local):**
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh --uninstall
+```
+
+**Without confirmation (quick):**
+```bash
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh --uninstall --force
+```
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
 ```
