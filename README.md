@@ -16,7 +16,7 @@ bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정
 
 ## 설치
 
-### 빠른 설치 (원라이너)
+### 빠른 설치
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
@@ -39,53 +39,6 @@ curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | ba
 ```bash
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
 ```
-
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
-```
-
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
-```
-
-**One-line (no confirmation, auto-remove):**
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
-```
-
-**With confirmation (download first):**
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --uninstall
-```
-
-**With confirmation (local):**
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --uninstall
-```
-
-**Without confirmation (quick):**
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --uninstall --force
-```
-
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
-```
-
-또는 install.sh를 다운로드한 경우:
-
-```bash
-./install.sh --uninstall
-```
-
-삭제 시 `y/n` 컨펌을 통해 안전하게 서비스를 중지하고 바이너리와 설정 파일을 제거합니다.
-
 ### 소스에서 빌드
 
 ```bash
