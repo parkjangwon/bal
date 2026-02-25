@@ -196,6 +196,11 @@ impl ProcessManager {
         }
     }
 
+    /// Probe process existence for diagnostics and tests.
+    pub(crate) fn probe_process_running(pid: i32) -> bool {
+        Self::is_process_running(pid)
+    }
+
     pub async fn collect_status(config_path: Option<PathBuf>) -> Result<ProcessStatusSummary> {
         let running = Self::is_daemon_running();
         let pid = if running {

@@ -32,12 +32,13 @@ Usage Examples:
   bal graceful                 # Reload config without downtime
   bal check                    # Validate configuration file
   bal status                   # Show local process/backend summary
+  bal doctor                   # Run local operational diagnostics
 "#,
     version = env!("CARGO_PKG_VERSION"),
     author = "bal Team"
 )]
 pub struct Cli {
-    /// Subcommand (start, stop, graceful, check)
+    /// Subcommand (start, stop, graceful, check, status, doctor)
     #[command(subcommand)]
     pub command: Commands,
 
@@ -118,6 +119,23 @@ pub enum Commands {
 
         /// Print status in JSON format
         #[arg(long, help = "Print status in JSON format")]
+        json: bool,
+    },
+
+    /// Run local operational diagnostics
+    #[command(name = "doctor", about = "Run local operational diagnostics")]
+    Doctor {
+        /// Configuration file path used for diagnostics
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Configuration file path for diagnostics"
+        )]
+        config: Option<PathBuf>,
+
+        /// Print diagnostics in JSON format
+        #[arg(long, help = "Print diagnostics in JSON format")]
         json: bool,
     },
 }

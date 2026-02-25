@@ -15,6 +15,7 @@ mod cli;
 mod config;
 mod config_store;
 mod constants;
+mod doctor;
 mod error;
 mod health;
 mod load_balancer;
@@ -96,6 +97,11 @@ async fn main() -> Result<()> {
             // Local process/backend summary
             info!("Showing local bal status");
             ProcessManager::print_status(config, json).await?;
+        }
+        Commands::Doctor { config, json } => {
+            // Local operational diagnostics
+            info!("Running bal doctor diagnostics");
+            doctor::run_and_print(config, json).await?;
         }
     }
 
