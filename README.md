@@ -227,6 +227,133 @@ src/
 - **효율적인 메모리 사용**: 단일 바이너리 약 2MB
 - **빠른 시작**: 밀리초 단위 초기화
 
+## 운영 배포 템플릿 (On-prem + VPN + hosts)
+
+예시 `/etc/hosts`:
+
+```txt
+10.10.0.11 app-a.internal
+10.10.0.12 app-b.internal
+```
+
+예시 `~/.bal/config.yaml`:
+
+```yaml
+port: 9295
+bind_address: "0.0.0.0"
+method: "round_robin"
+log_level: "info"
+
+runtime:
+  health_check_interval_ms: 1000
+  health_check_timeout_ms: 500
+  health_check_fail_threshold: 2
+  health_check_success_threshold: 2
+  backend_connect_timeout_ms: 400
+  failover_backoff_initial_ms: 100
+  failover_backoff_max_ms: 5000
+  backend_cooldown_ms: 500
+  max_concurrent_connections: 20000
+  connection_idle_timeout_ms: 120000
+  overload_policy: "reject"
+  tcp_backlog: 2048
+
+backends:
+  - host: "app-a.internal"
+    port: 443
+  - host: "app-b.internal"
+    port: 443
+```
+
+## 서비스 등록 예시
+
+### systemd (Linux)
+
+`/etc/systemd/system/bal.service`
+
+```ini
+[Unit]
+Description=bal TCP Load Balancer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bal
+Group=bal
+ExecStart=/usr/local/bin/bal start -c /home/bal/.bal/config.yaml
+ExecReload=/usr/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now bal
+sudo systemctl status bal
+```
+
+### launchd (macOS)
+
+`~/Library/LaunchAgents/com.bal.daemon.plist`
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.bal.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/bal</string>
+    <string>start</string>
+    <string>-c</string>
+    <string>/Users/your-user/.bal/config.yaml</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/bal.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/bal.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.bal.daemon.plist
+launchctl list | grep bal
+```
+
+## 운영 점검/트러블슈팅 런북
+
+1. 설정 사전 검증
+
+```bash
+bal check -c ~/.bal/config.yaml
+```
+
+2. 런타임 상태 확인
+
+```bash
+bal status
+bal status --json
+```
+
+3. 무중단 리로드
+
+```bash
+bal graceful
+```
+
+4. 증상별 대응
+- `All backends failed`: VPN/hosts/DNS 확인, 백엔드 방화벽/보안그룹 점검
+- 연결이 튄다(Flapping): `backend_cooldown_ms`, `failover_backoff_*` 상향
+- 과부하 시 거절 증가: `max_concurrent_connections`/`tcp_backlog` 조정
+- 리로드 실패: 에러 로그 확인 후 설정 수정, 기존 런타임 설정은 유지됨
+
 ## 라이선스
 
 MIT License
