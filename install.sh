@@ -31,7 +31,28 @@ get_installed_version() {
 }
 
 # Uninstall bal
+# Uninstall bal
 uninstall_bal() {
+    # Check if running from pipe (non-tty)
+    # If piped, run in force mode without prompting
+    local force_mode=false
+    if [[ ! -t 0 ]]; then
+        echo "Running in pipe mode. Using force uninstall (no confirmation)."
+        force_mode=true
+    fi
+    
+    if [[ "$force_mode" != "true" ]]; then
+        echo -e "${YELLOW}This will uninstall bal.${NC}"
+        echo "Config folder: $CONFIG_DIR"
+        echo ""
+        read -p "Continue? [y/N] " -n 1 -r
+        echo ""
+        
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+    fi
     local force=$1
     
     # Check if running in terminal (tty)
