@@ -53,38 +53,6 @@ cargo build --release
 sudo cp target/release/bal /usr/local/bin/
 ```
 
-### 빠른 설치
-
-```bash
-curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
-```
-
-지원 환경:
-- macOS (Apple Silicon)
-- Linux (x86_64, i386)
-
-### 소스에서 빌드
-
-```bash
-# 소스에서 빌드
-git clone https://github.com/parkjangwon/bal
-cd bal
-cargo build --release
-
-# 바이너리 복사
-cp target/release/bal /usr/local/bin/
-```
-
-```bash
-# 소스에서 빌드
-git clone https://github.com/parkjangwon/bal
-cd bal
-cargo build --release
-
-# 바이너리 복사
-cp target/release/bal /usr/local/bin/
-```
-
 ## 빠른 시작 (테스트)
 
 ### 1. 샘플 백엔드 서버 실행
