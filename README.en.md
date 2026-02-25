@@ -1,155 +1,84 @@
-# bal - Ultra-lightweight TCP Load Balancer
+# bal
 
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Ultra-lightweight L4 TCP load balancer focused on **simple / convenient / stable** operations.
 
-bal is a high-performance L4 (TCP) load balancer supporting SSL Passthrough and zero-downtime configuration reload.
+## 5-minute start
 
-## Key Features
-
-- **SSL Passthrough**: Transparently relays packets at L4 level, letting backends handle SSL certificates
-- **Zero-downtime Config Reload**: Hot reload via arc-swap (SIGHUP signal)
-- **Async Health Checks**: Backend status monitoring every 5 seconds
-- **Non-root Execution**: Home directory based operations (`~/.bal/`)
-- **Graceful Shutdown**: Preserves existing connections on SIGINT/SIGTERM
-- **Single Binary**: Deploy as a single file without external dependencies
-
-## Installation
-
+1. Install
 ```bash
-# Build from source
-git clone https://github.com/bal/bal
-cd bal
-cargo build --release
-
-# Copy binary
-cp target/release/bal /usr/local/bin/
+cargo install --path .
 ```
 
-## Usage
-
-### 1. Create Configuration File
-
+2. Prepare config
 ```bash
-# Auto-create default config if not exists
-bal start
+mkdir -p ~/.bal
+cp sample/config.yaml ~/.bal/config.yaml
 ```
 
-Or manually create `~/.bal/config.yaml`:
-
-```yaml
-# bal service port (9295: designer-assigned unique port)
-port: 9295
-
-# Load balancing method (default: round_robin)
-method: "round_robin"
-
-# Backend server list
-backends:
-  - host: "210.22.11.33"
-    port: 443
-  - host: "210.22.11.34"
-    port: 443
-```
-
-### 2. Start Daemon
-
+3. Core health flow
 ```bash
-bal start                    # Start with default config
-bal start -c /path/to/config.yaml  # Start with specified config
+bal check
+bal doctor
+bal status
 ```
 
-### 3. Validate Configuration (Static)
-
+4. Run/stop
 ```bash
-bal check                    # Static config validation only
-bal check --strict           # Warnings become non-zero exit
-bal check --json             # JSON output
-bal check -c /path/to/config.yaml
+bal start -d
+bal status
+bal stop
 ```
 
-### 4. Reload Configuration Without Downtime
+## Core commands
 
+### `bal check` (static validation, concise by default)
 ```bash
-bal graceful                 # Send SIGHUP signal to running daemon
+bal check
+bal check --verbose          # detailed report
+bal check --json             # keep existing JSON behavior
+bal check --strict           # [advanced] non-zero on warnings
 ```
 
-### 5. Stop Daemon
-
+### `bal doctor` (runtime diagnostics, concise by default)
 ```bash
-bal stop                     # Safely terminate with SIGTERM
+bal doctor
+bal doctor --verbose         # detailed diagnostics + hints
+bal doctor --json            # keep existing JSON behavior
+bal doctor --brief           # [advanced] force concise mode (compat)
 ```
 
-### CLI Help
-
+### `bal status` (state observation, concise by default)
 ```bash
-bal --help                   # Full help
-bal start --help            # Help for start command
+bal status
+bal status --verbose         # backend details + hints
+bal status --json            # keep existing JSON behavior
+bal status --brief           # [advanced] force concise mode (compat)
 ```
 
-## Architecture
-
-```
-Client
-    │
-    ▼
-┌─────────────────────────────────────┐
-│  bal Load Balancer (Port 9295)      │
-│  ┌─────────────┐  ┌─────────────┐  │
-│  │   Proxy     │  │   Health    │  │
-│  │   Server    │  │   Checker   │  │
-│  └──────┬──────┘  └─────────────┘  │
-│         │                           │
-│  ┌──────▼──────┐  ┌─────────────┐  │
-│  │  Load       │  │   Config    │  │
-│  │  Balancer   │  │   Store     │  │
-│  │ (RoundRobin)│  │ (arc-swap)  │  │
-│  └──────┬──────┘  └─────────────┘  │
-└─────────┼───────────────────────────┘
-          │     │
-          ▼     ▼
-    ┌─────────┐ ┌─────────┐
-    │Backend 1│ │Backend 2│
-    │:443     │ │:443     │
-    └─────────┘ └─────────┘
+### Service control
+```bash
+bal start -d
+bal graceful
+bal stop
 ```
 
-## Project Structure
+## Troubleshooting
 
-```
-src/
-├── main.rs           # Application entry point
-├── cli.rs            # CLI argument parsing (clap)
-├── config.rs         # Configuration file management (YAML)
-├── config_store.rs   # arc-swap based hot-swapping
-├── constants.rs      # Constants definition
-├── error.rs          # Error handling
-├── backend_pool.rs   # Backend state management
-├── load_balancer.rs  # Load balancing algorithms
-├── proxy.rs          # TCP proxy (copy_bidirectional)
-├── health.rs         # Health checks
-├── supervisor.rs     # Task orchestration
-├── process.rs        # PID file, process control
-├── state.rs          # App state management
-└── logging.rs        # Logging configuration
-```
+- `check` fails:
+  - verify config path (`--config <FILE>`)
+  - fix YAML syntax / required fields
+- `doctor` reports CRITICAL:
+  - clean stale PID file
+  - resolve bind-port conflicts
+  - verify backend host/port/firewall
+- `status` shows `0/N reachable`:
+  - run `bal doctor --verbose` for root cause
 
-## Tech Stack
+## Safety notes
 
-- **Language**: Rust (Latest Stable)
-- **Async Runtime**: Tokio
-- **CLI**: clap v4
-- **Configuration**: serde + serde_yaml
-- **Hot-swap**: arc-swap
-- **Signals**: nix
-
-## Performance Characteristics
-
-- **Kernel-level zero-copy**: Uses `tokio::io::copy_bidirectional`
-- **Lock-free config reload**: Atomic config replacement via `arc-swap`
-- **Efficient memory usage**: Single binary ~2MB
-- **Fast startup**: Millisecond-level initialization
-
-## License
-
-MIT License
+- Before production actions, always run in order:
+  1. `bal check`
+  2. `bal doctor`
+  3. `bal status`
+- Prefer non-root execution.
+- If using `bind_address: 0.0.0.0`, verify firewall/security-group policies.

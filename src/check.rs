@@ -22,29 +22,37 @@ impl CheckReport {
         !self.warnings.is_empty()
     }
 
-    pub fn to_plain_text(&self) -> String {
+    pub fn to_plain_text(&self, verbose: bool) -> String {
         let mut lines = vec![
-            "bal check (static validation)".to_string(),
-            format!("  config: {}", self.config_path),
+            "bal check".to_string(),
+            format!(
+                "  result: {}",
+                if self.has_errors() { "FAILED" } else { "OK" }
+            ),
             format!("  mode: {}", self.mode),
             format!("  backends: {}", self.backend_count),
+            format!("  warnings: {}", self.warnings.len()),
         ];
 
-        if self.errors.is_empty() {
-            lines.push("  errors: none".to_string());
-        } else {
-            lines.push(format!("  errors: {}", self.errors.len()));
-            for error in &self.errors {
-                lines.push(format!("    - {}", error));
-            }
-        }
+        if verbose {
+            lines.push(format!("  config: {}", self.config_path));
 
-        if self.warnings.is_empty() {
-            lines.push("  warnings: none".to_string());
-        } else {
-            lines.push(format!("  warnings: {}", self.warnings.len()));
-            for warning in &self.warnings {
-                lines.push(format!("    - {}", warning));
+            if self.errors.is_empty() {
+                lines.push("  errors: none".to_string());
+            } else {
+                lines.push(format!("  errors: {}", self.errors.len()));
+                for error in &self.errors {
+                    lines.push(format!("    - {}", error));
+                }
+            }
+
+            if self.warnings.is_empty() {
+                lines.push("  warning_details: none".to_string());
+            } else {
+                lines.push("  warning_details:".to_string());
+                for warning in &self.warnings {
+                    lines.push(format!("    - {}", warning));
+                }
             }
         }
 
@@ -86,13 +94,18 @@ pub async fn run_check(config_path: Option<PathBuf>) -> Result<CheckReport> {
     })
 }
 
-pub async fn run_and_print(config_path: Option<PathBuf>, strict: bool, json: bool) -> Result<()> {
+pub async fn run_and_print(
+    config_path: Option<PathBuf>,
+    strict: bool,
+    json: bool,
+    verbose: bool,
+) -> Result<()> {
     let report = run_check(config_path).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{}", report.to_plain_text());
+        println!("{}", report.to_plain_text(verbose));
     }
 
     if report.has_errors() || (strict && report.has_warnings()) {
@@ -100,4 +113,36 @@ pub async fn run_and_print(config_path: Option<PathBuf>, strict: bool, json: boo
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_report() -> CheckReport {
+        CheckReport {
+            config_path: "/tmp/bal.yaml".to_string(),
+            errors: Vec::new(),
+            warnings: vec!["bind_address is 0.0.0.0 (listens on all interfaces)".to_string()],
+            mode: "simple".to_string(),
+            backend_count: 2,
+        }
+    }
+
+    #[test]
+    fn plain_text_default_is_concise() {
+        let rendered = sample_report().to_plain_text(false);
+        assert!(rendered.contains("bal check"));
+        assert!(rendered.contains("warnings: 1"));
+        assert!(!rendered.contains("warning_details:"));
+        assert!(!rendered.contains("config:"));
+    }
+
+    #[test]
+    fn plain_text_verbose_includes_details() {
+        let rendered = sample_report().to_plain_text(true);
+        assert!(rendered.contains("config: /tmp/bal.yaml"));
+        assert!(rendered.contains("warning_details:"));
+        assert!(rendered.contains("bind_address is 0.0.0.0"));
+    }
 }

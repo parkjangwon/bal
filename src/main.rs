@@ -93,25 +93,28 @@ async fn main() -> Result<()> {
             config,
             strict,
             json,
+            verbose,
         } => {
             info!("Running static config check");
-            check::run_and_print(config, strict, json).await?;
+            check::run_and_print(config, strict, json, verbose).await?;
         }
         Commands::Status {
             config,
             json,
             brief,
+            verbose,
         } => {
             info!("Showing bal state status");
-            ProcessManager::print_status(config, json, brief).await?;
+            ProcessManager::print_status(config, json, verbose && !brief).await?;
         }
         Commands::Doctor {
             config,
             json,
             brief,
+            verbose,
         } => {
             info!("Running bal doctor diagnostics");
-            doctor::run_and_print(config, json, brief).await?;
+            doctor::run_and_print(config, json, verbose && !brief).await?;
         }
     }
 

@@ -37,7 +37,7 @@ impl DoctorReport {
             .any(|check| check.level == CheckLevel::Critical)
     }
 
-    pub fn to_plain_text(&self, brief: bool) -> String {
+    pub fn to_plain_text(&self, verbose: bool) -> String {
         let mut lines = Vec::new();
         let overall = if self.has_critical_failure() {
             "FAILED"
@@ -62,7 +62,7 @@ impl DoctorReport {
         ));
 
         for check in &self.checks {
-            if brief && check.level == CheckLevel::Ok {
+            if !verbose && check.level == CheckLevel::Ok {
                 continue;
             }
 
@@ -72,8 +72,8 @@ impl DoctorReport {
                 check.name,
                 check.summary
             ));
-            if let Some(hint) = &check.hint {
-                if !brief {
+            if verbose {
+                if let Some(hint) = &check.hint {
                     lines.push(format!("    hint: {}", hint));
                 }
             }
@@ -168,13 +168,13 @@ pub async fn run_doctor(config_path: Option<PathBuf>) -> DoctorReport {
     }
 }
 
-pub async fn run_and_print(config_path: Option<PathBuf>, json: bool, brief: bool) -> Result<()> {
+pub async fn run_and_print(config_path: Option<PathBuf>, json: bool, verbose: bool) -> Result<()> {
     let report = run_doctor(config_path).await;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{}", report.to_plain_text(brief));
+        println!("{}", report.to_plain_text(verbose));
     }
 
     if report.has_critical_failure() {
@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_report_plain_text_includes_hint_for_failed_check() {
+    fn doctor_report_verbose_includes_hint_for_failed_check() {
         let report = DoctorReport {
             checks: vec![DoctorCheck {
                 name: "bind".to_string(),
@@ -424,13 +424,42 @@ mod tests {
             },
         };
 
-        let rendered = report.to_plain_text(false);
+        let rendered = report.to_plain_text(true);
         assert!(rendered.contains("bind"));
         assert!(rendered.contains("address is already in use"));
         assert!(rendered.contains("hint:"));
         assert!(rendered.contains("bal status"));
         assert!(rendered.contains("resolve CRITICAL items first"));
         assert!(rendered.contains("protection_mode: on"));
+    }
+
+    #[test]
+    fn doctor_report_default_concise_hides_ok_checks_and_hints() {
+        let report = DoctorReport {
+            checks: vec![
+                DoctorCheck {
+                    name: "pid".to_string(),
+                    level: CheckLevel::Ok,
+                    summary: "healthy".to_string(),
+                    hint: None,
+                },
+                DoctorCheck {
+                    name: "bind".to_string(),
+                    level: CheckLevel::Warn,
+                    summary: "already in use".to_string(),
+                    hint: Some("Run 'bal status'".to_string()),
+                },
+            ],
+            protection_mode: ProtectionModeSummary {
+                enabled: false,
+                reason: None,
+            },
+        };
+
+        let rendered = report.to_plain_text(false);
+        assert!(!rendered.contains("[OK]"));
+        assert!(!rendered.contains("hint:"));
+        assert!(rendered.contains("[WARN]"));
     }
 
     #[test]

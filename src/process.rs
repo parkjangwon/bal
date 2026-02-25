@@ -312,7 +312,7 @@ impl ProcessManager {
         Ok(summary)
     }
 
-    pub fn build_status_report(summary: ProcessStatusSummary, brief: bool) -> String {
+    pub fn build_status_report(summary: ProcessStatusSummary, verbose: bool) -> String {
         let running_text = if summary.running { "yes" } else { "no" };
         let pid_text = summary
             .pid
@@ -351,7 +351,7 @@ impl ProcessManager {
             summary.last_check_time
         );
 
-        if !brief && !summary.backends.is_empty() {
+        if verbose && !summary.backends.is_empty() {
             report.push_str("\n  backend_details:");
             for backend in &summary.backends {
                 report.push_str(&format!(
@@ -367,17 +367,17 @@ impl ProcessManager {
             }
         }
 
-        if !brief && !summary.running {
+        if verbose && !summary.running {
             report.push_str("\n  hint: daemon is not running. Start it with 'bal start -d'");
         }
 
-        if !brief && summary.config_path.is_none() {
+        if verbose && summary.config_path.is_none() {
             report.push_str(
                 "\n  hint: config path unresolved. Pass '--config <FILE>' if using a custom path",
             );
         }
 
-        if !brief {
+        if verbose {
             if let (Some(reachable), Some(total)) =
                 (summary.backend_reachable, summary.backend_total)
             {
@@ -392,12 +392,16 @@ impl ProcessManager {
         report
     }
 
-    pub async fn print_status(config_path: Option<PathBuf>, json: bool, brief: bool) -> Result<()> {
+    pub async fn print_status(
+        config_path: Option<PathBuf>,
+        json: bool,
+        verbose: bool,
+    ) -> Result<()> {
         let summary = Self::collect_status(config_path).await?;
         if json {
             println!("{}", serde_json::to_string_pretty(&summary)?);
         } else {
-            println!("{}", Self::build_status_report(summary, brief));
+            println!("{}", Self::build_status_report(summary, verbose));
         }
         Ok(())
     }
@@ -507,7 +511,7 @@ mod tests {
                 active_connections: 3,
                 last_check_time: "2026-01-01T00:00:00Z".to_string(),
             },
-            false,
+            true,
         );
 
         assert!(report.contains("running: yes"));
@@ -538,7 +542,7 @@ mod tests {
                 active_connections: 0,
                 last_check_time: "2026-01-01T00:00:00Z".to_string(),
             },
-            false,
+            true,
         );
 
         assert!(report.contains("daemon is not running"));
@@ -548,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn build_status_report_brief_hides_backend_details() {
+    fn build_status_report_default_concise_hides_backend_details() {
         let report = ProcessManager::build_status_report(
             ProcessStatusSummary {
                 protection_mode: ProtectionModeSummary {
@@ -577,7 +581,7 @@ mod tests {
                 active_connections: 0,
                 last_check_time: "2026-01-01T00:00:00Z".to_string(),
             },
-            true,
+            false,
         );
 
         assert!(!report.contains("backend_details"));
