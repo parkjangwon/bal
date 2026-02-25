@@ -59,10 +59,12 @@ bal start                    # Start with default config
 bal start -c /path/to/config.yaml  # Start with specified config
 ```
 
-### 3. Validate Configuration (Dry-run)
+### 3. Validate Configuration (Static)
 
 ```bash
-bal check                    # Validate config file
+bal check                    # Static config validation only
+bal check --strict           # Warnings become non-zero exit
+bal check --json             # JSON output
 bal check -c /path/to/config.yaml
 ```
 

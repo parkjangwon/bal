@@ -16,6 +16,7 @@ use std::process;
 use crate::config::Config;
 use crate::constants::{get_pid_file_path, get_runtime_dir};
 use crate::error::ResultExt;
+use crate::protection;
 
 /// Process manager
 ///
@@ -39,6 +40,12 @@ pub struct BackendStatusSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ProtectionModeSummary {
+    pub enabled: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProcessStatusSummary {
     pub running: bool,
     pub pid: Option<i32>,
@@ -51,6 +58,7 @@ pub struct ProcessStatusSummary {
     pub backends: Vec<BackendStatusSummary>,
     pub active_connections: usize,
     pub last_check_time: String,
+    pub protection_mode: ProtectionModeSummary,
 }
 
 impl ProcessManager {
@@ -224,6 +232,7 @@ impl ProcessManager {
             backends: Vec::new(),
             active_connections: 0,
             last_check_time: chrono::Utc::now().to_rfc3339(),
+            protection_mode: current_protection_mode(),
         };
 
         if let Some(path) = resolved_config_path {
@@ -303,7 +312,7 @@ impl ProcessManager {
         Ok(summary)
     }
 
-    pub fn build_status_report(summary: ProcessStatusSummary) -> String {
+    pub fn build_status_report(summary: ProcessStatusSummary, brief: bool) -> String {
         let running_text = if summary.running { "yes" } else { "no" };
         let pid_text = summary
             .pid
@@ -324,18 +333,25 @@ impl ProcessManager {
         };
 
         let mut report = format!(
-            "bal status\n  running: {}\n  pid: {}\n  config: {}\n  listen: {}\n  method: {}\n  backends: {}\n  active_connections: {}\n  last_check_time: {}",
+            "bal status (state observation)\n  running: {}\n  pid: {}\n  config: {}\n  listen: {}\n  method: {}\n  backends: {}\n  protection_mode: {}{}\n  active_connections: {}\n  last_check_time: {}",
             running_text,
             pid_text,
             config_text,
             listen_text,
             method_text,
             backend_text,
+            if summary.protection_mode.enabled { "on" } else { "off" },
+            summary
+                .protection_mode
+                .reason
+                .as_ref()
+                .map(|reason| format!(" ({})", reason))
+                .unwrap_or_default(),
             summary.active_connections,
             summary.last_check_time
         );
 
-        if !summary.backends.is_empty() {
+        if !brief && !summary.backends.is_empty() {
             report.push_str("\n  backend_details:");
             for backend in &summary.backends {
                 report.push_str(&format!(
@@ -351,35 +367,53 @@ impl ProcessManager {
             }
         }
 
-        if !summary.running {
+        if !brief && !summary.running {
             report.push_str("\n  hint: daemon is not running. Start it with 'bal start -d'");
         }
 
-        if summary.config_path.is_none() {
+        if !brief && summary.config_path.is_none() {
             report.push_str(
                 "\n  hint: config path unresolved. Pass '--config <FILE>' if using a custom path",
             );
         }
 
-        if let (Some(reachable), Some(total)) = (summary.backend_reachable, summary.backend_total) {
-            if total > 0 && reachable == 0 {
-                report.push_str("\n  hint: no reachable backend. Run 'bal doctor' and verify backend host/port/firewall");
-            } else if reachable < total {
-                report.push_str("\n  hint: partial backend reachability detected. Check failing backends in backend_details");
+        if !brief {
+            if let (Some(reachable), Some(total)) =
+                (summary.backend_reachable, summary.backend_total)
+            {
+                if total > 0 && reachable == 0 {
+                    report.push_str("\n  hint: no reachable backend. Run 'bal doctor' and verify backend host/port/firewall");
+                } else if reachable < total {
+                    report.push_str("\n  hint: partial backend reachability detected. Check failing backends in backend_details");
+                }
             }
         }
 
         report
     }
 
-    pub async fn print_status(config_path: Option<PathBuf>, json: bool) -> Result<()> {
+    pub async fn print_status(config_path: Option<PathBuf>, json: bool, brief: bool) -> Result<()> {
         let summary = Self::collect_status(config_path).await?;
         if json {
             println!("{}", serde_json::to_string_pretty(&summary)?);
         } else {
-            println!("{}", Self::build_status_report(summary));
+            println!("{}", Self::build_status_report(summary, brief));
         }
         Ok(())
+    }
+}
+
+fn current_protection_mode() -> ProtectionModeSummary {
+    if let Some(snapshot) = protection::read_snapshot() {
+        return ProtectionModeSummary {
+            enabled: snapshot.enabled,
+            reason: snapshot.reason,
+        };
+    }
+
+    ProtectionModeSummary {
+        enabled: false,
+        reason: None,
     }
 }
 
@@ -432,6 +466,10 @@ mod tests {
             }],
             active_connections: 0,
             last_check_time: "2026-01-01T00:00:00Z".to_string(),
+            protection_mode: ProtectionModeSummary {
+                enabled: false,
+                reason: None,
+            },
         };
 
         let encoded = serde_json::to_string(&summary).expect("json encoding should work");
@@ -441,29 +479,36 @@ mod tests {
 
     #[test]
     fn build_status_report_contains_practical_runtime_summary() {
-        let report = ProcessManager::build_status_report(ProcessStatusSummary {
-            running: true,
-            pid: Some(4242),
-            config_path: Some("/tmp/bal-config.yaml".to_string()),
-            bind_address: "0.0.0.0".to_string(),
-            port: Some(9295),
-            method: Some("round_robin".to_string()),
-            backend_total: Some(2),
-            backend_reachable: Some(1),
-            backends: vec![BackendStatusSummary {
-                address: "127.0.0.1:9000".to_string(),
-                reachable: true,
+        let report = ProcessManager::build_status_report(
+            ProcessStatusSummary {
+                protection_mode: ProtectionModeSummary {
+                    enabled: false,
+                    reason: None,
+                },
+                running: true,
+                pid: Some(4242),
+                config_path: Some("/tmp/bal-config.yaml".to_string()),
+                bind_address: "0.0.0.0".to_string(),
+                port: Some(9295),
+                method: Some("round_robin".to_string()),
+                backend_total: Some(2),
+                backend_reachable: Some(1),
+                backends: vec![BackendStatusSummary {
+                    address: "127.0.0.1:9000".to_string(),
+                    reachable: true,
+                    active_connections: 3,
+                    last_check_time: "2026-01-01T00:00:00Z".to_string(),
+                    counters: BackendErrorCounters {
+                        timeout: 0,
+                        refused: 0,
+                        other: 0,
+                    },
+                }],
                 active_connections: 3,
                 last_check_time: "2026-01-01T00:00:00Z".to_string(),
-                counters: BackendErrorCounters {
-                    timeout: 0,
-                    refused: 0,
-                    other: 0,
-                },
-            }],
-            active_connections: 3,
-            last_check_time: "2026-01-01T00:00:00Z".to_string(),
-        });
+            },
+            false,
+        );
 
         assert!(report.contains("running: yes"));
         assert!(report.contains("pid: 4242"));
@@ -475,22 +520,66 @@ mod tests {
 
     #[test]
     fn build_status_report_includes_actionable_hints_for_ambiguous_state() {
-        let report = ProcessManager::build_status_report(ProcessStatusSummary {
-            running: false,
-            pid: None,
-            config_path: None,
-            bind_address: "0.0.0.0".to_string(),
-            port: None,
-            method: None,
-            backend_total: Some(2),
-            backend_reachable: Some(0),
-            backends: Vec::new(),
-            active_connections: 0,
-            last_check_time: "2026-01-01T00:00:00Z".to_string(),
-        });
+        let report = ProcessManager::build_status_report(
+            ProcessStatusSummary {
+                protection_mode: ProtectionModeSummary {
+                    enabled: true,
+                    reason: Some("all_backends_unavailable".to_string()),
+                },
+                running: false,
+                pid: None,
+                config_path: None,
+                bind_address: "0.0.0.0".to_string(),
+                port: None,
+                method: None,
+                backend_total: Some(2),
+                backend_reachable: Some(0),
+                backends: Vec::new(),
+                active_connections: 0,
+                last_check_time: "2026-01-01T00:00:00Z".to_string(),
+            },
+            false,
+        );
 
         assert!(report.contains("daemon is not running"));
         assert!(report.contains("config path unresolved"));
         assert!(report.contains("no reachable backend"));
+        assert!(report.contains("protection_mode: on"));
+    }
+
+    #[test]
+    fn build_status_report_brief_hides_backend_details() {
+        let report = ProcessManager::build_status_report(
+            ProcessStatusSummary {
+                protection_mode: ProtectionModeSummary {
+                    enabled: false,
+                    reason: None,
+                },
+                running: true,
+                pid: Some(1),
+                config_path: Some("/tmp/bal.yml".to_string()),
+                bind_address: "0.0.0.0".to_string(),
+                port: Some(9295),
+                method: Some("round_robin".to_string()),
+                backend_total: Some(1),
+                backend_reachable: Some(1),
+                backends: vec![BackendStatusSummary {
+                    address: "127.0.0.1:9000".to_string(),
+                    reachable: true,
+                    active_connections: 0,
+                    last_check_time: "2026-01-01T00:00:00Z".to_string(),
+                    counters: BackendErrorCounters {
+                        timeout: 0,
+                        refused: 0,
+                        other: 0,
+                    },
+                }],
+                active_connections: 0,
+                last_check_time: "2026-01-01T00:00:00Z".to_string(),
+            },
+            true,
+        );
+
+        assert!(!report.contains("backend_details"));
     }
 }

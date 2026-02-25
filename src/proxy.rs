@@ -14,6 +14,7 @@ use tokio::time::timeout;
 
 use crate::backend_pool::{BackendErrorKind, BackendState, ConnectionGuard};
 use crate::config::{BackendConfig, OverloadPolicy};
+use crate::protection;
 use crate::state::AppState;
 
 /// Proxy server
@@ -184,9 +185,16 @@ async fn connect_with_retry(
     let connect_timeout_ms = runtime_config.runtime_tuning.backend_connect_timeout_ms;
     let fail_threshold = runtime_config.runtime_tuning.health_check_fail_threshold;
     let success_threshold = runtime_config.runtime_tuning.health_check_success_threshold;
-    let backoff_initial_ms = runtime_config.runtime_tuning.failover_backoff_initial_ms;
-    let backoff_max_ms = runtime_config.runtime_tuning.failover_backoff_max_ms;
-    let cooldown_ms = runtime_config.runtime_tuning.backend_cooldown_ms;
+    let mut backoff_initial_ms = runtime_config.runtime_tuning.failover_backoff_initial_ms;
+    let mut backoff_max_ms = runtime_config.runtime_tuning.failover_backoff_max_ms;
+    let mut cooldown_ms = runtime_config.runtime_tuning.backend_cooldown_ms;
+    let protection_mode = state.protection_mode();
+
+    if protection_mode.is_enabled() {
+        backoff_initial_ms = backoff_initial_ms.saturating_mul(2);
+        backoff_max_ms = backoff_max_ms.saturating_mul(2);
+        cooldown_ms = cooldown_ms.saturating_mul(2);
+    }
 
     let load_balancer = state.load_balancer();
     let pool = &state.backend_pool();
@@ -248,6 +256,9 @@ async fn connect_with_retry(
                         );
                     }
                     backend.mark_connect_success(success_threshold);
+                    if protection_mode.record_success() {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
                     return Ok((backend, stream, backend_addr));
                 }
                 Ok(Err(e)) => {
@@ -263,6 +274,9 @@ async fn connect_with_retry(
                         backoff_max_ms,
                         cooldown_ms,
                     );
+                    if protection_mode.record_failure(kind) {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
                     last_error = Some(format!("Connection failed: {}", e));
                 }
                 Err(_) => {
@@ -277,6 +291,9 @@ async fn connect_with_retry(
                         backoff_max_ms,
                         cooldown_ms,
                     );
+                    if protection_mode.record_failure(BackendErrorKind::Timeout) {
+                        protection::write_snapshot(&protection_mode.snapshot());
+                    }
                     last_error = Some("Connection timeout".to_string());
                 }
             }
@@ -317,6 +334,9 @@ async fn connect_with_retry(
                 // Success! Immediately mark as healthy
                 let was_healthy = backend.is_healthy();
                 backend.mark_connect_success(success_threshold);
+                if protection_mode.record_success() {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
                 if !was_healthy {
                     info!(
                         "Backend {}:{} recovered and serving traffic immediately!",
@@ -326,13 +346,17 @@ async fn connect_with_retry(
                 return Ok((Arc::clone(backend), stream, backend_addr));
             }
             Ok(Err(e)) => {
+                let kind = classify_connect_error(&e);
                 backend.mark_connect_failure(
-                    classify_connect_error(&e),
+                    kind,
                     fail_threshold,
                     backoff_initial_ms,
                     backoff_max_ms,
                     cooldown_ms,
                 );
+                if protection_mode.record_failure(kind) {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
             }
             Err(_) => {
                 backend.mark_connect_failure(
@@ -342,11 +366,18 @@ async fn connect_with_retry(
                     backoff_max_ms,
                     cooldown_ms,
                 );
+                if protection_mode.record_failure(BackendErrorKind::Timeout) {
+                    protection::write_snapshot(&protection_mode.snapshot());
+                }
             }
         }
     }
 
     // All backends failed
+    if protection_mode.record_global_unavailable() {
+        protection::write_snapshot(&protection_mode.snapshot());
+    }
+
     bail!(
         "All {} backends failed. Last error: {}",
         all_backends.len(),

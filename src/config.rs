@@ -150,6 +150,15 @@ pub struct RuntimeTuning {
     #[serde(default = "default_backend_cooldown_ms")]
     pub backend_cooldown_ms: u64,
 
+    #[serde(default = "default_protection_trigger_threshold")]
+    pub protection_trigger_threshold: u32,
+
+    #[serde(default = "default_protection_window_ms")]
+    pub protection_window_ms: u64,
+
+    #[serde(default = "default_protection_stable_success_threshold")]
+    pub protection_stable_success_threshold: u32,
+
     #[serde(default = "default_max_concurrent_connections")]
     pub max_concurrent_connections: usize,
 
@@ -174,6 +183,9 @@ impl Default for RuntimeTuning {
             failover_backoff_initial_ms: default_failover_backoff_initial_ms(),
             failover_backoff_max_ms: default_failover_backoff_max_ms(),
             backend_cooldown_ms: default_backend_cooldown_ms(),
+            protection_trigger_threshold: default_protection_trigger_threshold(),
+            protection_window_ms: default_protection_window_ms(),
+            protection_stable_success_threshold: default_protection_stable_success_threshold(),
             max_concurrent_connections: default_max_concurrent_connections(),
             connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
             overload_policy: OverloadPolicy::default(),
@@ -257,6 +269,9 @@ fn auto_tuned_runtime_profile(backend_count: usize) -> RuntimeTuning {
             failover_backoff_initial_ms: 200,
             failover_backoff_max_ms: 5_000,
             backend_cooldown_ms: 500,
+            protection_trigger_threshold: 10,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 12,
             max_concurrent_connections: 4_000,
             connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
             overload_policy: OverloadPolicy::default(),
@@ -272,6 +287,9 @@ fn auto_tuned_runtime_profile(backend_count: usize) -> RuntimeTuning {
             failover_backoff_initial_ms: 300,
             failover_backoff_max_ms: 7_000,
             backend_cooldown_ms: 700,
+            protection_trigger_threshold: 12,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 14,
             max_concurrent_connections: 8_000,
             connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
             overload_policy: OverloadPolicy::default(),
@@ -287,6 +305,9 @@ fn auto_tuned_runtime_profile(backend_count: usize) -> RuntimeTuning {
             failover_backoff_initial_ms: 500,
             failover_backoff_max_ms: 10_000,
             backend_cooldown_ms: 1_000,
+            protection_trigger_threshold: 14,
+            protection_window_ms: 30_000,
+            protection_stable_success_threshold: 16,
             max_concurrent_connections: 12_000,
             connection_idle_timeout_ms: default_connection_idle_timeout_ms(),
             overload_policy: OverloadPolicy::default(),
@@ -337,6 +358,18 @@ fn default_failover_backoff_max_ms() -> u64 {
 
 fn default_backend_cooldown_ms() -> u64 {
     300
+}
+
+fn default_protection_trigger_threshold() -> u32 {
+    10
+}
+
+fn default_protection_window_ms() -> u64 {
+    30_000
+}
+
+fn default_protection_stable_success_threshold() -> u32 {
+    12
 }
 
 fn default_max_concurrent_connections() -> usize {
@@ -460,6 +493,18 @@ impl Config {
             bail!("failover_backoff_max_ms must be >= failover_backoff_initial_ms");
         }
 
+        if self.runtime.protection_trigger_threshold == 0 {
+            bail!("protection_trigger_threshold must be greater than 0");
+        }
+
+        if self.runtime.protection_window_ms == 0 {
+            bail!("protection_window_ms must be greater than 0");
+        }
+
+        if self.runtime.protection_stable_success_threshold == 0 {
+            bail!("protection_stable_success_threshold must be greater than 0");
+        }
+
         if self.runtime.max_concurrent_connections == 0 {
             bail!("max_concurrent_connections must be greater than 0");
         }
@@ -575,7 +620,7 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
     println!("  - Log level: {}", config.log_level);
     if config.mode == ConfigMode::Advanced {
         println!(
-            "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms max_conns={} idle_timeout={}ms overload_policy={}",
+            "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms protection_trigger={} protection_window={}ms protection_recover={} max_conns={} idle_timeout={}ms overload_policy={}",
             config.runtime.health_check_interval_ms,
             config.runtime.health_check_timeout_ms,
             config.runtime.health_check_fail_threshold,
@@ -584,6 +629,9 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
             config.runtime.failover_backoff_initial_ms,
             config.runtime.failover_backoff_max_ms,
             config.runtime.backend_cooldown_ms,
+            config.runtime.protection_trigger_threshold,
+            config.runtime.protection_window_ms,
+            config.runtime.protection_stable_success_threshold,
             config.runtime.max_concurrent_connections,
             config.runtime.connection_idle_timeout_ms,
             match config.runtime.overload_policy { OverloadPolicy::Reject => "reject" },

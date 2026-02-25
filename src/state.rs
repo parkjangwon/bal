@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use crate::backend_pool::BackendPool;
 use crate::config::{BalanceMethod, RuntimeTuning};
 use crate::load_balancer::LoadBalancer;
+use crate::protection::ProtectionMode;
 
 /// Runtime configuration
 ///
@@ -65,6 +66,8 @@ pub struct AppState {
     reload: tokio::sync::mpsc::Sender<()>,
     /// Current active connection count
     active_connections: Arc<RwLock<usize>>,
+    /// Automatic protection mode state
+    protection_mode: Arc<ProtectionMode>,
 }
 
 impl AppState {
@@ -81,12 +84,21 @@ impl AppState {
             Arc::clone(&runtime_config.backend_pool),
         );
 
+        let protection_mode = Arc::new(ProtectionMode::new(
+            runtime_config.runtime_tuning.protection_trigger_threshold,
+            runtime_config.runtime_tuning.protection_window_ms,
+            runtime_config
+                .runtime_tuning
+                .protection_stable_success_threshold,
+        ));
+
         Self {
             config: ArcSwap::new(Arc::new(runtime_config)),
             load_balancer,
             shutdown,
             reload,
             active_connections: Arc::new(RwLock::new(0)),
+            protection_mode,
         }
     }
 
@@ -177,6 +189,10 @@ impl AppState {
     /// Get load balancer reference
     pub fn load_balancer(&self) -> &LoadBalancer {
         &self.load_balancer
+    }
+
+    pub fn protection_mode(&self) -> Arc<ProtectionMode> {
+        Arc::clone(&self.protection_mode)
     }
 
     /// Get listen port

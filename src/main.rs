@@ -11,6 +11,7 @@ use anyhow::Result;
 use log::info;
 
 mod backend_pool;
+mod check;
 mod cli;
 mod config;
 mod config_store;
@@ -21,6 +22,7 @@ mod health;
 mod load_balancer;
 mod logging;
 mod process;
+mod protection;
 mod proxy;
 mod state;
 mod supervisor;
@@ -87,21 +89,29 @@ async fn main() -> Result<()> {
             info!("Reloading configuration gracefully");
             ProcessManager::send_reload_signal()?;
         }
-        Commands::Check { config } => {
-            // Validate config file (Dry-run)
-            info!("Validating configuration file");
-            config::validate_config_file(config).await?;
-            println!("Configuration file is valid");
+        Commands::Check {
+            config,
+            strict,
+            json,
+        } => {
+            info!("Running static config check");
+            check::run_and_print(config, strict, json).await?;
         }
-        Commands::Status { config, json } => {
-            // Local process/backend summary
-            info!("Showing local bal status");
-            ProcessManager::print_status(config, json).await?;
+        Commands::Status {
+            config,
+            json,
+            brief,
+        } => {
+            info!("Showing bal state status");
+            ProcessManager::print_status(config, json, brief).await?;
         }
-        Commands::Doctor { config, json } => {
-            // Local operational diagnostics
+        Commands::Doctor {
+            config,
+            json,
+            brief,
+        } => {
             info!("Running bal doctor diagnostics");
-            doctor::run_and_print(config, json).await?;
+            doctor::run_and_print(config, json, brief).await?;
         }
     }
 

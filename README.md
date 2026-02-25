@@ -150,10 +150,12 @@ bal start                    # 기본 설정으로 시작
 bal start -c /path/to/config.yaml  # 지정된 설정 파일로 시작
 ```
 
-### 3. 설정 검증 (Dry-run)
+### 3. 설정 검증 (정적 검사)
 
 ```bash
-bal check                    # 설정 파일 검증
+bal check                              # 정적 설정 검사(기본)
+bal check --strict                     # 경고도 실패(비정상 종료 코드)
+bal check --json                       # JSON 출력
 bal check -c /path/to/config.yaml
 ```
 
@@ -339,6 +341,27 @@ sudo systemctl status bal
 launchctl load ~/Library/LaunchAgents/com.bal.daemon.plist
 launchctl list | grep bal
 ```
+
+## 명령 경계 (check / doctor / status)
+
+- `bal check`: **정적 설정 검증만** 수행합니다. (기본적으로 네트워크 접속 테스트 안 함)
+- `bal doctor`: 런타임 진단/환경 점검(바인딩 가능 여부, PID/백엔드 도달성 등)
+- `bal status`: 현재 상태 관찰(실행 여부, 설정/백엔드 요약, 보호 모드 상태)
+
+간단 매트릭스:
+
+| 명령어 | 목적 | 기본 출력 | 주요 옵션 |
+|---|---|---|---|
+| `bal check` | 정적 설정 유효성 | 체크 리포트 | `--strict`, `--json` |
+| `bal doctor` | 런타임/환경 진단 | 진단 리포트 | `--brief`, `--json` |
+| `bal status` | 상태 관찰 | 상태 요약 | `--brief`, `--json` |
+
+## 자동 보호 모드 (Protection Mode)
+
+- 트리거: 짧은 시간 내 timeout/refused 오류 폭증 또는 사실상 모든 백엔드 불가용
+- 동작: failover 재시도 공격성을 낮추기 위해 backoff/cooldown을 자동 상향
+- 복구: 안정 성공이 충분히 누적되면 자동 해제(히스테리시스)
+- 노출: `bal status`, `bal doctor`, JSON 출력에 `protection_mode`와 `reason` 표시
 
 ## 운영 점검/트러블슈팅 런북
 

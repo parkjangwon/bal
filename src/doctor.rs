@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use crate::config::Config;
 use crate::constants::get_pid_file_path;
-use crate::process::ProcessManager;
+use crate::process::{ProcessManager, ProtectionModeSummary};
+use crate::protection;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +27,7 @@ pub struct DoctorCheck {
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
+    pub protection_mode: ProtectionModeSummary,
 }
 
 impl DoctorReport {
@@ -35,7 +37,7 @@ impl DoctorReport {
             .any(|check| check.level == CheckLevel::Critical)
     }
 
-    pub fn to_plain_text(&self) -> String {
+    pub fn to_plain_text(&self, brief: bool) -> String {
         let mut lines = Vec::new();
         let overall = if self.has_critical_failure() {
             "FAILED"
@@ -43,10 +45,27 @@ impl DoctorReport {
             "OK"
         };
 
-        lines.push("bal doctor".to_string());
+        lines.push("bal doctor (runtime diagnostics)".to_string());
         lines.push(format!("  overall: {}", overall));
+        lines.push(format!(
+            "  protection_mode: {}{}",
+            if self.protection_mode.enabled {
+                "on"
+            } else {
+                "off"
+            },
+            self.protection_mode
+                .reason
+                .as_ref()
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_default()
+        ));
 
         for check in &self.checks {
+            if brief && check.level == CheckLevel::Ok {
+                continue;
+            }
+
             lines.push(format!(
                 "  - [{}] {}: {}",
                 check.level.label(),
@@ -54,7 +73,9 @@ impl DoctorReport {
                 check.summary
             ));
             if let Some(hint) = &check.hint {
-                lines.push(format!("    hint: {}", hint));
+                if !brief {
+                    lines.push(format!("    hint: {}", hint));
+                }
             }
         }
 
@@ -78,6 +99,7 @@ impl CheckLevel {
 
 pub async fn run_doctor(config_path: Option<PathBuf>) -> DoctorReport {
     let mut checks = Vec::new();
+    let protection_mode = current_protection_mode();
 
     checks.push(check_pid_consistency());
 
@@ -90,7 +112,10 @@ pub async fn run_doctor(config_path: Option<PathBuf>) -> DoctorReport {
                 summary: format!("cannot resolve config path: {}", err),
                 hint: Some("Provide a config path with '--config <FILE>'".to_string()),
             });
-            return DoctorReport { checks };
+            return DoctorReport {
+                checks,
+                protection_mode,
+            };
         }
     };
 
@@ -104,7 +129,10 @@ pub async fn run_doctor(config_path: Option<PathBuf>) -> DoctorReport {
                 resolved_config.display()
             )),
         });
-        return DoctorReport { checks };
+        return DoctorReport {
+            checks,
+            protection_mode,
+        };
     }
 
     let config = match Config::load_from_file(&resolved_config).await {
@@ -124,23 +152,29 @@ pub async fn run_doctor(config_path: Option<PathBuf>) -> DoctorReport {
                 summary: format!("failed to load config: {}", err),
                 hint: Some("Fix YAML syntax and required fields in the config file".to_string()),
             });
-            return DoctorReport { checks };
+            return DoctorReport {
+                checks,
+                protection_mode,
+            };
         }
     };
 
     checks.push(check_bindability(&config));
     checks.push(check_backends(&config).await);
 
-    DoctorReport { checks }
+    DoctorReport {
+        checks,
+        protection_mode,
+    }
 }
 
-pub async fn run_and_print(config_path: Option<PathBuf>, json: bool) -> Result<()> {
+pub async fn run_and_print(config_path: Option<PathBuf>, json: bool, brief: bool) -> Result<()> {
     let report = run_doctor(config_path).await;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("{}", report.to_plain_text());
+        println!("{}", report.to_plain_text(brief));
     }
 
     if report.has_critical_failure() {
@@ -323,6 +357,20 @@ async fn check_backends(config: &Config) -> DoctorCheck {
     }
 }
 
+fn current_protection_mode() -> ProtectionModeSummary {
+    if let Some(snapshot) = protection::read_snapshot() {
+        return ProtectionModeSummary {
+            enabled: snapshot.enabled,
+            reason: snapshot.reason,
+        };
+    }
+
+    ProtectionModeSummary {
+        enabled: false,
+        reason: None,
+    }
+}
+
 fn resolve_bind_target(bind_target: &str) -> std::result::Result<SocketAddr, String> {
     bind_target
         .to_socket_addrs()
@@ -352,6 +400,10 @@ mod tests {
                     hint: Some("Remove ~/.bal/bal.pid".to_string()),
                 },
             ],
+            protection_mode: ProtectionModeSummary {
+                enabled: false,
+                reason: None,
+            },
         };
 
         assert!(report.has_critical_failure());
@@ -366,14 +418,19 @@ mod tests {
                 summary: "address is already in use".to_string(),
                 hint: Some("Run 'bal status' to verify which process owns the port".to_string()),
             }],
+            protection_mode: ProtectionModeSummary {
+                enabled: true,
+                reason: Some("timeout_or_refused_storm".to_string()),
+            },
         };
 
-        let rendered = report.to_plain_text();
+        let rendered = report.to_plain_text(false);
         assert!(rendered.contains("bind"));
         assert!(rendered.contains("address is already in use"));
         assert!(rendered.contains("hint:"));
         assert!(rendered.contains("bal status"));
         assert!(rendered.contains("resolve CRITICAL items first"));
+        assert!(rendered.contains("protection_mode: on"));
     }
 
     #[test]

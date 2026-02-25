@@ -16,6 +16,7 @@ use crate::config_store::ConfigStore;
 use crate::constants::GRACEFUL_SHUTDOWN_TIMEOUT_SECS;
 use crate::health::HealthChecker;
 use crate::process::PidFileGuard;
+use crate::protection;
 use crate::proxy::ProxyServer;
 use crate::state::AppState;
 
@@ -56,6 +57,7 @@ impl Supervisor {
         let (reload_tx, mut reload_rx) = mpsc::channel(4);
 
         let state = Arc::new(AppState::new(runtime_config, shutdown_tx, reload_tx));
+        protection::write_snapshot(&state.protection_mode().snapshot());
 
         // Register signal handlers
         let mut sigterm =
@@ -221,6 +223,7 @@ pub async fn run_foreground(cli_config_path: Option<&std::path::Path>) -> Result
     let (reload_tx, mut reload_rx) = mpsc::channel(4);
 
     let state = Arc::new(AppState::new(runtime_config, shutdown_tx, reload_tx));
+    protection::write_snapshot(&state.protection_mode().snapshot());
 
     // Register signal handlers
     let mut sigterm =
