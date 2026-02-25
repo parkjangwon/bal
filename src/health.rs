@@ -11,10 +11,6 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::{interval, timeout};
 
-use crate::constants::{
-    HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_MAX_RETRIES, HEALTH_CHECK_MIN_SUCCESS,
-    HEALTH_CHECK_TIMEOUT_MS,
-};
 use crate::state::AppState;
 
 /// Health check manager
@@ -35,11 +31,12 @@ impl HealthChecker {
     /// Periodically checks all backends, logging state changes.
     /// Exits loop on shutdown signal.
     pub async fn run(&self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> Result<()> {
-        let mut ticker = interval(Duration::from_millis(HEALTH_CHECK_INTERVAL_MS));
+        let runtime = self.state.config().runtime_tuning.clone();
+        let mut ticker = interval(Duration::from_millis(runtime.health_check_interval_ms));
 
         info!(
             "Health check started: {}ms interval, {}ms timeout",
-            HEALTH_CHECK_INTERVAL_MS, HEALTH_CHECK_TIMEOUT_MS
+            runtime.health_check_interval_ms, runtime.health_check_timeout_ms
         );
 
         // First check runs immediately
@@ -67,12 +64,14 @@ impl HealthChecker {
     async fn check_all_backends(&self) -> Result<()> {
         let config = self.state.config();
         let pool = &config.backend_pool;
+        let runtime = config.runtime_tuning.clone();
 
         // Check each backend in parallel
         let mut handles = vec![];
 
         for backend in pool.all_backends() {
             let backend = Arc::clone(backend);
+            let runtime = runtime.clone();
             let handle = tokio::spawn(async move {
                 let addr = match backend.config.to_health_check_addr().await {
                     Ok(a) => a,
@@ -89,7 +88,7 @@ impl HealthChecker {
 
                 // TCP connection test
                 let result = timeout(
-                    Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
+                    Duration::from_millis(runtime.health_check_timeout_ms),
                     TcpStream::connect(&addr),
                 )
                 .await;
@@ -97,7 +96,7 @@ impl HealthChecker {
                 match result {
                     Ok(Ok(_)) => {
                         // Connection success
-                        backend.mark_success(HEALTH_CHECK_MIN_SUCCESS);
+                        backend.mark_success(runtime.health_check_success_threshold);
                     }
                     Ok(Err(e)) => {
                         // Connection failure
@@ -105,7 +104,7 @@ impl HealthChecker {
                             "Backend {}:{} connection failed: {}",
                             backend.config.host, backend.config.port, e
                         );
-                        backend.mark_failure(HEALTH_CHECK_MAX_RETRIES);
+                        backend.mark_failure(runtime.health_check_fail_threshold);
                     }
                     Err(_) => {
                         // Timeout
@@ -113,7 +112,7 @@ impl HealthChecker {
                             "Backend {}:{} timeout",
                             backend.config.host, backend.config.port
                         );
-                        backend.mark_failure(HEALTH_CHECK_MAX_RETRIES);
+                        backend.mark_failure(runtime.health_check_fail_threshold);
                     }
                 }
             });
@@ -138,12 +137,7 @@ impl HealthChecker {
     pub async fn check_single_backend(host: &str, port: u16) -> Result<bool> {
         let addr = format!("{}:{}", host, port);
 
-        match timeout(
-            Duration::from_millis(HEALTH_CHECK_TIMEOUT_MS),
-            TcpStream::connect(&addr),
-        )
-        .await
-        {
+        match timeout(Duration::from_millis(500), TcpStream::connect(&addr)).await {
             Ok(Ok(_)) => Ok(true),
             _ => Ok(false),
         }

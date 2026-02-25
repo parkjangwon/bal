@@ -35,15 +35,18 @@ impl ProxyServer {
     /// connection asynchronously. Stops accepting new connections on
     /// graceful shutdown signal.
     pub async fn run(&self, shutdown: &mut tokio::sync::broadcast::Receiver<()>) -> Result<()> {
-        let port = self.state.port();
-        let addr = SocketAddr::from(([0, 0, 0, 0], port));
+        let config = self.state.config();
+        let listen_addr = format!("{}:{}", config.bind_address, config.port);
 
         // Create TCP listener
-        let listener = TcpListener::bind(&addr)
+        let listener = TcpListener::bind(&listen_addr)
             .await
-            .with_context(|| format!("Failed to bind to port {}", port))?;
+            .with_context(|| format!("Failed to bind to {}", listen_addr))?;
 
-        info!("Proxy server started: {} (L4 Passthrough mode)", addr);
+        info!(
+            "Proxy server started: {} (L4 Passthrough mode)",
+            listen_addr
+        );
 
         loop {
             tokio::select! {
@@ -135,11 +138,14 @@ async fn handle_connection(
 /// 1. First try healthy backends
 /// 2. If all healthy backends fail, try ALL backends including unhealthy ones
 /// 3. On successful connection, immediately mark backend as healthy
-/// 4. Uses 500ms timeout for immediate failover
+/// 4. Uses configured backend connect timeout for immediate failover
 async fn connect_with_retry(
     state: &Arc<AppState>,
     client_addr: &SocketAddr,
 ) -> Result<(Arc<BackendState>, TcpStream, SocketAddr)> {
+    let runtime_config = state.config();
+    let connect_timeout_ms = runtime_config.runtime_tuning.backend_connect_timeout_ms;
+
     let load_balancer = state.load_balancer();
     let pool = &state.backend_pool();
 
@@ -176,7 +182,7 @@ async fn connect_with_retry(
 
             // Try to connect with ultra-short timeout for immediate failover
             match timeout(
-                Duration::from_millis(500), // 500ms timeout for instant failover
+                Duration::from_millis(connect_timeout_ms),
                 TcpStream::connect(&backend_addr),
             )
             .await
@@ -230,7 +236,7 @@ async fn connect_with_retry(
         );
 
         match timeout(
-            Duration::from_millis(500),
+            Duration::from_millis(connect_timeout_ms),
             TcpStream::connect(&backend_addr),
         )
         .await

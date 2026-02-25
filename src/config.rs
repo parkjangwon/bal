@@ -13,7 +13,10 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::net::{lookup_host, TcpStream};
 
-use crate::constants::{get_home_config_path, get_system_config_path, DEFAULT_PORT};
+use crate::constants::{
+    get_home_config_path, get_system_config_path, DEFAULT_PORT, HEALTH_CHECK_INTERVAL_MS,
+    HEALTH_CHECK_MAX_RETRIES, HEALTH_CHECK_MIN_SUCCESS, HEALTH_CHECK_TIMEOUT_MS,
+};
 
 /// Load balancing algorithm types
 ///
@@ -95,6 +98,37 @@ impl BackendConfig {
     }
 }
 
+/// Runtime tuning configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeTuning {
+    #[serde(default = "default_health_check_interval_ms")]
+    pub health_check_interval_ms: u64,
+
+    #[serde(default = "default_health_check_timeout_ms")]
+    pub health_check_timeout_ms: u64,
+
+    #[serde(default = "default_health_check_fail_threshold")]
+    pub health_check_fail_threshold: u32,
+
+    #[serde(default = "default_health_check_success_threshold")]
+    pub health_check_success_threshold: u32,
+
+    #[serde(default = "default_backend_connect_timeout_ms")]
+    pub backend_connect_timeout_ms: u64,
+}
+
+impl Default for RuntimeTuning {
+    fn default() -> Self {
+        Self {
+            health_check_interval_ms: default_health_check_interval_ms(),
+            health_check_timeout_ms: default_health_check_timeout_ms(),
+            health_check_fail_threshold: default_health_check_fail_threshold(),
+            health_check_success_threshold: default_health_check_success_threshold(),
+            backend_connect_timeout_ms: default_backend_connect_timeout_ms(),
+        }
+    }
+}
+
 /// Complete configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -110,6 +144,14 @@ pub struct Config {
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
+    /// Bind address for listener
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+
+    /// Runtime tuning knobs
+    #[serde(default)]
+    pub runtime: RuntimeTuning,
+
     /// List of backend servers
     pub backends: Vec<BackendConfig>,
 }
@@ -122,6 +164,30 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_health_check_interval_ms() -> u64 {
+    HEALTH_CHECK_INTERVAL_MS
+}
+
+fn default_health_check_timeout_ms() -> u64 {
+    HEALTH_CHECK_TIMEOUT_MS
+}
+
+fn default_health_check_fail_threshold() -> u32 {
+    HEALTH_CHECK_MAX_RETRIES
+}
+
+fn default_health_check_success_threshold() -> u32 {
+    HEALTH_CHECK_MIN_SUCCESS
+}
+
+fn default_backend_connect_timeout_ms() -> u64 {
+    HEALTH_CHECK_TIMEOUT_MS
+}
+
 impl Config {
     /// Create new Config with defaults
     pub fn new() -> Self {
@@ -129,6 +195,8 @@ impl Config {
             port: DEFAULT_PORT,
             method: BalanceMethod::RoundRobin,
             log_level: "info".to_string(),
+            bind_address: default_bind_address(),
+            runtime: RuntimeTuning::default(),
             backends: Vec::new(),
         }
     }
@@ -200,6 +268,30 @@ impl Config {
             bail!("Port cannot be 0");
         }
 
+        if self.bind_address.trim().is_empty() {
+            bail!("Bind address cannot be empty");
+        }
+
+        if self.runtime.health_check_interval_ms == 0 {
+            bail!("health_check_interval_ms must be greater than 0");
+        }
+
+        if self.runtime.health_check_timeout_ms == 0 {
+            bail!("health_check_timeout_ms must be greater than 0");
+        }
+
+        if self.runtime.health_check_fail_threshold == 0 {
+            bail!("health_check_fail_threshold must be greater than 0");
+        }
+
+        if self.runtime.health_check_success_threshold == 0 {
+            bail!("health_check_success_threshold must be greater than 0");
+        }
+
+        if self.runtime.backend_connect_timeout_ms == 0 {
+            bail!("backend_connect_timeout_ms must be greater than 0");
+        }
+
         Ok(())
     }
 
@@ -213,6 +305,17 @@ method: "round_robin"
 
 # Log level (debug, info, warn, error)
 log_level: "info"
+
+# Bind address for listener
+bind_address: "0.0.0.0"
+
+# Runtime tuning knobs
+runtime:
+  health_check_interval_ms: 200
+  health_check_timeout_ms: 500
+  health_check_fail_threshold: 1
+  health_check_success_threshold: 1
+  backend_connect_timeout_ms: 500
 
 # Backend server list
 backends:
@@ -272,9 +375,17 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
     // Load and parse
     let config = Config::load_from_file(&path).await?;
 
-    println!("  - Listen port: {}", config.port);
+    println!("  - Listen: {}:{}", config.bind_address, config.port);
     println!("  - Load balancing: {:?}", config.method);
     println!("  - Log level: {}", config.log_level);
+    println!(
+        "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms",
+        config.runtime.health_check_interval_ms,
+        config.runtime.health_check_timeout_ms,
+        config.runtime.health_check_fail_threshold,
+        config.runtime.health_check_success_threshold,
+        config.runtime.backend_connect_timeout_ms,
+    );
     println!("  - Number of backends: {}", config.backends.len());
 
     // Validate backend connectivity
@@ -317,5 +428,50 @@ mod tests {
             .await
             .expect("hostname should resolve");
         assert_eq!(resolved.port(), 80);
+    }
+
+    #[test]
+    fn parse_config_applies_runtime_and_bind_defaults() {
+        let yaml = r#"
+port: 9295
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
+
+        assert_eq!(config.bind_address, "0.0.0.0");
+        assert_eq!(config.runtime.health_check_interval_ms, 200);
+        assert_eq!(config.runtime.health_check_timeout_ms, 500);
+        assert_eq!(config.runtime.health_check_fail_threshold, 1);
+        assert_eq!(config.runtime.health_check_success_threshold, 1);
+        assert_eq!(config.runtime.backend_connect_timeout_ms, 500);
+    }
+
+    #[test]
+    fn parse_config_overrides_runtime_and_bind_settings() {
+        let yaml = r#"
+port: 9295
+bind_address: "127.0.0.1"
+runtime:
+  health_check_interval_ms: 750
+  health_check_timeout_ms: 1200
+  health_check_fail_threshold: 3
+  health_check_success_threshold: 2
+  backend_connect_timeout_ms: 900
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
+
+        assert_eq!(config.bind_address, "127.0.0.1");
+        assert_eq!(config.runtime.health_check_interval_ms, 750);
+        assert_eq!(config.runtime.health_check_timeout_ms, 1200);
+        assert_eq!(config.runtime.health_check_fail_threshold, 3);
+        assert_eq!(config.runtime.health_check_success_threshold, 2);
+        assert_eq!(config.runtime.backend_connect_timeout_ms, 900);
     }
 }

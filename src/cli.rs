@@ -31,6 +31,7 @@ Usage Examples:
   bal stop                     # Stop running daemon
   bal graceful                 # Reload config without downtime
   bal check                    # Validate configuration file
+  bal status                   # Show local process/backend summary
 "#,
     version = env!("CARGO_PKG_VERSION"),
     author = "bal Team"
@@ -99,6 +100,19 @@ pub enum Commands {
             long,
             value_name = "FILE",
             help = "Configuration file path to validate"
+        )]
+        config: Option<PathBuf>,
+    },
+
+    /// Show local process and backend status summary
+    #[command(name = "status", about = "Show local process/backend summary")]
+    Status {
+        /// Configuration file path used for backend summary
+        #[arg(
+            short,
+            long,
+            value_name = "FILE",
+            help = "Configuration file path for status summary"
         )]
         config: Option<PathBuf>,
     },
