@@ -3,6 +3,8 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<img width="1024" height="1024" alt="1772038664631" src="https://github.com/user-attachments/assets/c104a22a-d3fe-4d85-9ceb-5854e4ad4780" />
+
 bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정 교체를 지원합니다.
 
 ## 주요 기능
