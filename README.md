@@ -101,10 +101,10 @@ bal stop
 
 ## Structured Logs (ELK/Loki 연동)
 
-기본 로그 포맷은 기존과 동일한 텍스트입니다(하위호환 유지).
+로그는 기본적으로 one-line JSON(NDJSON) 포맷으로 출력됩니다.
 
 ```bash
-BAL_LOG_FORMAT=json bal start -d
+bal start -d
 ```
 
 JSON 한 줄 스키마 키:

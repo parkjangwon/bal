@@ -101,11 +101,10 @@ bal stop
 
 ## Structured logs (ELK/Loki friendly)
 
-Default logs remain plain text (backward compatible).
+Logs are emitted as one-line JSON (NDJSON) by default.
 
 ```bash
-# one-line JSON logs
-BAL_LOG_FORMAT=json bal start -d
+bal start -d
 ```
 
 JSON schema keys per line:
