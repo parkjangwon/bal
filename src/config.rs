@@ -194,21 +194,18 @@ impl Config {
     
     /// Generate default configuration file template
     pub fn default_template() -> String {
-        r#"# bal service port (9295: designer-assigned unique port)
+        r#"# bal service port
 port: 9295
 
-# Load balancing method (default: round_robin)
+# Load balancing method
 method: "round_robin"
 
-# Backend server list (host and port separated)
+# Backend server list
 backends:
   - host: "127.0.0.1"
     port: 9000
   - host: "127.0.0.1"
     port: 9100
-    port: 8080
-  - host: "127.0.0.1"
-    port: 8081
 "#.to_string()
     }
     
