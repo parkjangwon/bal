@@ -26,6 +26,7 @@ mod error;
 
 use cli::{Cli, Commands};
 use process::ProcessManager;
+use config::Config;
 
 /// Application entry point
 /// 
@@ -35,17 +36,43 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let cli = Cli::parse_args();
     
-    // Initialize logging system
-    logging::init_logging(cli.verbose)?;
+    // Determine if running in daemon mode
+    let daemon_mode = matches!(cli.command, Commands::Start { daemon: true, .. });
+    
+    // For Start command, load config first to get log_level
+    let log_level = match &cli.command {
+        Commands::Start { config: cli_config, .. } => {
+            // Try to load config to get log_level
+            match Config::resolve_config_path(cli_config.as_deref()) {
+                Ok(config_path) => {
+                    match Config::load(&config_path).await {
+                        Ok(config) => config.log_level,
+                        Err(_) => "info".to_string(), // Default if config fails to load
+                    }
+                }
+                Err(_) => "info".to_string(), // Default if no config found
+            }
+        }
+        _ => "info".to_string(), // Default for non-start commands
+    };
+    
+    // Initialize logging system with config's log_level
+    logging::init_logging(&log_level, daemon_mode)?;
     
     info!("bal v{} starting", env!("CARGO_PKG_VERSION"));
     
     // Dispatch subcommands
     match cli.command {
-        Commands::Start { config } => {
-            // Run as background daemon
-            info!("Starting in daemon mode");
-            supervisor::run_daemon(config.as_deref()).await?;
+        Commands::Start { config, daemon } => {
+            if daemon {
+                // Run as background daemon (detached)
+                info!("Starting in daemon mode");
+                supervisor::run_daemon(config.as_deref()).await?;
+            } else {
+                // Run in foreground
+                info!("Starting in foreground mode");
+                supervisor::run_foreground(config.as_deref()).await?;
+            }
         }
         Commands::Stop => {
             // Stop running process

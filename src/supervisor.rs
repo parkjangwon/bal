@@ -199,3 +199,126 @@ impl Supervisor {
 pub async fn run_daemon(cli_config_path: Option<&Path>) -> Result<()> {
     Supervisor::run_daemon(cli_config_path).await
 }
+
+/// Run daemon in foreground mode (for `bal start` without -d)
+/// 
+/// Same as run_daemon but without PID file creation.
+/// Logs go to stdout.
+pub async fn run_foreground(cli_config_path: Option<&std::path::Path>) -> Result<()> {
+    info!("bal foreground mode starting (PID: {})", std::process::id());
+    
+    // Load initial configuration
+    let (runtime_config, config_path) = ConfigStore::load_initial_config(cli_config_path).await?;
+    
+    info!("Configuration loaded: {}", config_path.display());
+    info!("  - Listen port: {}", runtime_config.port);
+    info!("  - Load balancing: {:?}", runtime_config.method);
+    info!("  - Backends: {}", runtime_config.backend_pool.total_count());
+    
+    // Initialize app state
+    let (shutdown_tx, _) = broadcast::channel(16);
+    let (reload_tx, mut reload_rx) = mpsc::channel(4);
+    
+    let state = Arc::new(AppState::new(runtime_config, shutdown_tx, reload_tx));
+    
+    // Register signal handlers
+    let mut sigterm = signal(SignalKind::terminate())
+        .context("Failed to register SIGTERM handler")?;
+    let mut sigint = signal(SignalKind::interrupt())
+        .context("Failed to register SIGINT handler")?;
+    let mut sighup = signal(SignalKind::hangup())
+        .context("Failed to register SIGHUP handler")?;
+    
+    info!("Signal handlers registered (SIGTERM, SIGINT, SIGHUP)");
+    
+    // Start background tasks
+    let proxy_state = Arc::clone(&state);
+    let health_state = Arc::clone(&state);
+    
+    let mut proxy_shutdown = state.subscribe_shutdown();
+    let health_shutdown = state.subscribe_shutdown();
+    
+    // Proxy server task
+    let proxy_handle = tokio::spawn(async move {
+        let proxy = ProxyServer::new(proxy_state);
+        if let Err(e) = proxy.run(&mut proxy_shutdown).await {
+            error!("Proxy server error: {}", e);
+        }
+    });
+    
+    // Health checker task
+    let health_handle = tokio::spawn(async move {
+        let checker = HealthChecker::new(health_state);
+        if let Err(e) = checker.run(health_shutdown).await {
+            error!("Health checker error: {}", e);
+        }
+    });
+    
+    info!("All service tasks started");
+    
+    // Main loop
+    loop {
+        tokio::select! {
+            // SIGTERM (stop command)
+            _ = sigterm.recv() => {
+                info!("SIGTERM received - starting graceful shutdown");
+                break;
+            }
+            
+            // SIGINT (Ctrl+C)
+            _ = sigint.recv() => {
+                info!("SIGINT received - starting graceful shutdown");
+                break;
+            }
+            
+            // SIGHUP (graceful reload)
+            _ = sighup.recv() => {
+                info!("SIGHUP received - reloading configuration");
+                if let Err(e) = ConfigStore::reload_config(&state, None).await {
+                    error!("Failed to reload configuration: {}", e);
+                }
+            }
+            
+            // Configuration reload channel
+            Some(_) = reload_rx.recv() => {
+                info!("Configuration reload triggered via channel");
+                if let Err(e) = ConfigStore::reload_config(&state, None).await {
+                    error!("Failed to reload configuration: {}", e);
+                }
+            }
+        }
+    }
+    
+    // Graceful shutdown
+    graceful_shutdown(state, proxy_handle, health_handle).await
+}
+
+/// Graceful shutdown sequence
+async fn graceful_shutdown(
+    state: Arc<AppState>,
+    proxy_handle: tokio::task::JoinHandle<()>,
+    health_handle: tokio::task::JoinHandle<()>,
+) -> Result<()> {
+    info!("Starting graceful shutdown...");
+    
+    // Send shutdown signal to all tasks
+    let _ = state.trigger_shutdown();
+    
+    // Wait for tasks to complete with timeout
+    let shutdown_timeout = Duration::from_secs(GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    
+    match timeout(shutdown_timeout, proxy_handle).await {
+        Ok(_) => info!("Proxy server stopped gracefully"),
+        Err(_) => warn!("Proxy server shutdown timeout"),
+    }
+    
+    match timeout(shutdown_timeout, health_handle).await {
+        Ok(_) => info!("Health checker stopped gracefully"),
+        Err(_) => warn!("Health checker shutdown timeout"),
+    }
+    
+    info!("All connections closed successfully");
+    info!("bal shutdown complete");
+    
+    Ok(())
+}

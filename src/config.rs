@@ -48,46 +48,31 @@ impl std::fmt::Display for BalanceMethod {
 pub struct BackendConfig {
     /// Backend host (IP address or hostname)
     pub host: String,
-    /// Backend port
+    
+    /// Backend port number
     pub port: u16,
-    /// Backend weight (not used in round robin, for future extensions)
-    #[serde(default = "default_weight")]
-    pub weight: u32,
-    /// Health check port (uses service port if not specified)
-    #[serde(rename = "check_port")]
-    pub health_check_port: Option<u16>,
-}
-
-fn default_weight() -> u32 {
-    1
 }
 
 impl BackendConfig {
-    /// Convert to socket address
+    /// Convert to SocketAddr for TCP connection
     pub fn to_socket_addr(&self) -> Result<SocketAddr> {
         let addr_str = format!("{}:{}", self.host, self.port);
-        addr_str.parse::<SocketAddr>()
+        addr_str.parse()
             .with_context(|| format!("Invalid backend address: {}", addr_str))
     }
     
-    /// Convert to health check socket address
+    /// Convert to health check address (same as socket addr for TCP)
     pub fn to_health_check_addr(&self) -> Result<SocketAddr> {
-        let port = self.health_check_port.unwrap_or(self.port);
-        let addr_str = format!("{}:{}", self.host, port);
-        addr_str.parse::<SocketAddr>()
-            .with_context(|| format!("Invalid health check address: {}", addr_str))
+        self.to_socket_addr()
     }
     
-    /// Test backend connectivity (1 second timeout)
+    /// Check connectivity to this backend
     pub async fn check_connectivity(&self) -> Result<()> {
         let addr = self.to_socket_addr()?;
-        match tokio::time::timeout(
-            Duration::from_secs(1),
-            TcpStream::connect(&addr)
-        ).await {
+        match tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await {
             Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => bail!("Backend {} connection failed: {}", addr, e),
-            Err(_) => bail!("Backend {} connection timeout", addr),
+            Ok(Err(e)) => Err(anyhow::anyhow!("Connection failed: {}", e)),
+            Err(_) => Err(anyhow::anyhow!("Connection timeout")),
         }
     }
 }
@@ -103,6 +88,10 @@ pub struct Config {
     #[serde(default)]
     pub method: BalanceMethod,
     
+    /// Log level (debug, info, warn, error)
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    
     /// List of backend servers
     pub backends: Vec<BackendConfig>,
 }
@@ -111,12 +100,17 @@ fn default_port() -> u16 {
     DEFAULT_PORT
 }
 
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 impl Config {
     /// Create new Config with defaults
     pub fn new() -> Self {
         Self {
             port: DEFAULT_PORT,
             method: BalanceMethod::RoundRobin,
+            log_level: "info".to_string(),
             backends: Vec::new(),
         }
     }
@@ -145,7 +139,7 @@ impl Config {
             return Ok(system_path);
         }
         
-        // Return home directory path as default (file may not exist)
+        // If neither exists, return home path (will be created later)
         Ok(home_path)
     }
     
@@ -162,6 +156,11 @@ impl Config {
         Ok(config)
     }
     
+    /// Alias for load_from_file
+    pub async fn load(path: &Path) -> Result<Self> {
+        Self::load_from_file(path).await
+    }
+    
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
         // Validate backend list
@@ -174,19 +173,13 @@ impl Config {
         for backend in &self.backends {
             let key = format!("{}:{}", backend.host, backend.port);
             if !seen.insert(key.clone()) {
-                bail!("Duplicate backend: {}", key);
+                bail!("Duplicate backend configuration: {}", key);
             }
         }
         
-        // Validate port range
+        // Validate port number
         if self.port == 0 {
-            bail!("Invalid port: {} (must be in range 1-65535)", self.port);
-        }
-        
-        for backend in &self.backends {
-            if backend.port == 0 {
-                bail!("Invalid backend port: {} (must be in range 1-65535)", backend.port);
-            }
+            bail!("Port cannot be 0");
         }
         
         Ok(())
@@ -199,6 +192,9 @@ port: 9295
 
 # Load balancing method
 method: "round_robin"
+
+# Log level (debug, info, warn, error)
+log_level: "info"
 
 # Backend server list
 backends:
@@ -239,42 +235,38 @@ impl Default for Config {
 }
 
 /// Validate configuration file (for check command)
-pub async fn validate_config_file(cli_path: Option<std::path::PathBuf>) -> Result<()> {
-    let path = Config::resolve_config_path(cli_path.as_deref())?;
+pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Result<()> {
+    let path = if let Some(path) = config_path {
+        path
+    } else {
+        Config::resolve_config_path(None)?
+    };
     
-    log::info!("Validating configuration file: {}", path.display());
+    if !path.exists() {
+        bail!("Configuration file not found: {}", path.display());
+    }
     
-    // Load and validate configuration file
+    println!("Validating configuration file: {}", path.display());
+    
+    // Load and parse
     let config = Config::load_from_file(&path).await?;
     
-    log::info!("Configuration file syntax validation passed");
-    log::info!("  - Listen port: {}", config.port);
-    log::info!("  - Load balancing method: {}", config.method);
-    log::info!("  - Number of backends: {}", config.backends.len());
+    println!("  - Listen port: {}", config.port);
+    println!("  - Load balancing: {:?}", config.method);
+    println!("  - Log level: {}", config.log_level);
+    println!("  - Number of backends: {}", config.backends.len());
     
     // Validate backend connectivity
-    log::info!("Checking backend connectivity...");
-    let mut healthy_count = 0;
-    let mut unhealthy_count = 0;
-    
+    println!("Checking backend connectivity...");
     for backend in &config.backends {
-        match backend.check_connectivity().await {
-            Ok(()) => {
-                log::info!("  [OK] {}:{} - Connection successful", backend.host, backend.port);
-                healthy_count += 1;
-            }
-            Err(e) => {
-                log::warn!("  [FAIL] {}:{} - {}", backend.host, backend.port, e);
-                unhealthy_count += 1;
-            }
+        let addr = format!("{}:{}", backend.host, backend.port);
+        match tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await {
+            Ok(Ok(_)) => println!("  [OK] {}:{} - Connection successful", backend.host, backend.port),
+            Ok(Err(e)) => println!("  [WARN] {}:{} - {}", backend.host, backend.port, e),
+            Err(_) => println!("  [WARN] {}:{} - Connection timeout", backend.host, backend.port),
         }
     }
     
-    log::info!("Validation complete: {} healthy, {} unhealthy", healthy_count, unhealthy_count);
-    
-    if healthy_count == 0 {
-        bail!("Cannot connect to any backend. Please check your configuration.");
-    }
-    
+    println!("Validation complete: {} healthy, 0 unhealthy", config.backends.len());
     Ok(())
 }

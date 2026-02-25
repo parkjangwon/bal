@@ -220,6 +220,55 @@ echo "Installing to $INSTALL_DIR..."
 $SUDO mv "$TMP_DIR/bal" "$INSTALL_DIR/$BINARY_NAME"
 $SUDO chmod +x "$INSTALL_DIR/$BINARY_NAME"
 
+# Create default config file if it doesn't exist
+if [[ ! -f "$HOME/.bal/config.yaml" ]]; then
+    echo "Creating default configuration file..."
+    mkdir -p "$HOME/.bal"
+    cat > "$HOME/.bal/config.yaml" << 'CONFIGEOF'
+# bal service port
+port: 9295
+
+# Load balancing method
+method: "round_robin"
+
+# Log level (debug, info, warn, error)
+log_level: "info"
+
+# Backend server list
+backends:
+  - host: "127.0.0.1"
+    port: 9000
+  - host: "127.0.0.1"
+    port: 9100
+CONFIGEOF
+    echo "Default config created at ~/.bal/config.yaml"
+    echo "Please update the backend addresses before starting bal."
+fi
+
+# Verify installation
+if command -v "$BINARY_NAME" &> /dev/null; then
+    NEW_VERSION=$("$BINARY_NAME" --version 2>/dev/null | awk '{print $2}')
+    echo ""
+    if [[ "$IS_UPDATE" == true ]]; then
+        echo -e "${GREEN}Updated! ($INSTALLED_VERSION → $NEW_VERSION)${NC}"
+    else
+        echo -e "${GREEN}Installed! (version: $NEW_VERSION)${NC}"
+    fi
+    echo ""
+    echo "Usage: bal --help"
+    
+    # If was running before update, suggest restart
+    if [[ "$IS_UPDATE" == true ]] && [[ -f "$PID_FILE" ]]; then
+        echo ""
+        echo -e "${YELLOW}Note: bal was stopped during update.${NC}"
+        echo "Run 'bal start' to start again."
+    fi
+else
+    echo -e "${RED}Installed, but $BINARY_NAME not found in PATH${NC}"
+    echo "You may need to restart your shell"
+fi
+$SUDO chmod +x "$INSTALL_DIR/$BINARY_NAME"
+
 # Verify installation
 if command -v "$BINARY_NAME" &> /dev/null; then
     NEW_VERSION=$("$BINARY_NAME" --version 2>/dev/null | awk '{print $2}')

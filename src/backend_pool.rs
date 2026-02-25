@@ -225,11 +225,12 @@ impl BackendPool {
             .cloned()
     }
     
+    
     /// Log pool status summary
     pub fn log_status(&self) {
         let total = self.total_count();
         let healthy = self.healthy_count();
-        log::info!("Backend pool status: {}/{} healthy", healthy, total);
+        log::debug!("Backend pool status: {}/{} healthy", healthy, total);
         
         for backend in &self.backends {
             let status = if backend.is_healthy() { "healthy" } else { "unhealthy" };
@@ -253,8 +254,6 @@ mod tests {
         BackendConfig {
             host: host.to_string(),
             port,
-            weight: 1,
-            health_check_port: None,
         }
     }
     

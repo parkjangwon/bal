@@ -25,7 +25,8 @@ Key Features:
   - Graceful Shutdown: Existing connections preserved on SIGINT/SIGTERM
 
 Usage Examples:
-  bal start                    # Start daemon with default config
+  bal start                    # Start in foreground mode
+  bal start -d                 # Start as background daemon
   bal start -c /path/config.yaml  # Start with specified config file
   bal stop                     # Stop running daemon
   bal graceful                 # Reload config without downtime
@@ -47,11 +48,12 @@ pub struct Cli {
 /// Available subcommands
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Run as background daemon
+    /// Start the load balancer
     ///
     /// Starts the load balancer with the specified configuration file.
     /// If no config file is specified, searches default paths.
-    #[command(name = "start", about = "Run as background daemon")]
+    /// Use -d flag to run as background daemon.
+    #[command(name = "start", about = "Start the load balancer")]
     Start {
         /// Configuration file path (optional)
         ///
@@ -60,6 +62,13 @@ pub enum Commands {
         /// 2. /etc/bal/config.yaml
         #[arg(short, long, value_name = "FILE", help = "Configuration file path")]
         config: Option<PathBuf>,
+
+        /// Run as daemon in background
+        ///
+        /// Detaches from terminal and runs in background.
+        /// Logs are written to file instead of console.
+        #[arg(short, long, help = "Run as daemon in background")]
+        daemon: bool,
     },
 
     /// Stop running daemon
