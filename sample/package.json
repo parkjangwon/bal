@@ -1,0 +1,15 @@
+{
+  "name": "bal-sample-backend",
+  "version": "1.0.0",
+  "description": "Sample backend servers for testing bal load balancer",
+  "main": "backend.js",
+  "scripts": {
+    "start:9000": "node backend.js 9000",
+    "start:9100": "node backend.js 9100",
+    "start:all": "npm run start:9000 & npm run start:9100",
+    "stop": "pkill -f 'node backend.js'"
+  },
+  "keywords": ["bal", "load-balancer", "test", "backend"],
+  "author": "bal Team",
+  "license": "MIT"
+}
