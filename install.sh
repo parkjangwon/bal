@@ -31,78 +31,24 @@ get_installed_version() {
 }
 
 # Uninstall bal
-# Uninstall bal
 uninstall_bal() {
-    # Check if running from pipe (non-tty)
-    # If piped, run in force mode without prompting
-    local force_mode=false
-    if [[ ! -t 0 ]]; then
-        echo "Running in pipe mode. Using force uninstall (no confirmation)."
-        force_mode=true
-    fi
-    
-    if [[ "$force_mode" != "true" ]]; then
-        echo -e "${YELLOW}This will uninstall bal.${NC}"
-        echo "Config folder: $CONFIG_DIR"
-        echo ""
-        read -p "Continue? [y/N] " -n 1 -r
-        echo ""
-        
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Cancelled."
-            exit 0
-        fi
-    fi
-    local force=$1
-    
-    # Check if running in terminal (tty)
-    if [[ "$force" != "true" ]] && [[ ! -t 0 ]]; then
-        echo -e "${RED}Error: Cannot prompt for confirmation in non-terminal mode.${NC}"
-        echo "Please download the script and run locally:"
-        echo "  curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh -o install.sh"
-        echo "  chmod +x install.sh"
-        echo "  ./install.sh --uninstall"
-        echo ""
-        echo "Or use --force to skip confirmation:"
-        echo "  ./install.sh --uninstall --force"
-        exit 1
-    fi
-    
-    echo -e "${YELLOW}This will uninstall bal.${NC}"
-    echo "Config folder: $CONFIG_DIR"
-    echo ""
-    
-    if [[ "$force" != "true" ]]; then
-        read -p "Continue? [y/N] " -n 1 -r
-        echo ""
-        
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Cancelled."
-            exit 0
-        fi
-    fi
-    
-    # Check if bal is running and stop it
+    # Stop service
     if [[ -f "$PID_FILE" ]]; then
         PID=$(cat "$PID_FILE" 2>/dev/null)
         if [[ -n "$PID" ]] && kill -0 "$PID" 2>/dev/null; then
-            echo "Stopping bal service (PID: $PID)..."
+            echo "Stopping bal service..."
             "$BINARY_NAME" stop 2>/dev/null || kill "$PID" 2>/dev/null || true
             sleep 1
-            
-            # Force kill if still running
             if kill -0 "$PID" 2>/dev/null; then
-                echo "Force stopping..."
                 kill -9 "$PID" 2>/dev/null || true
             fi
         fi
     fi
     
-    # Check if we need sudo for uninstall
+    # Check sudo
     if [[ -w "$INSTALL_DIR" ]]; then
         SUDO=""
     else
-        echo "Need sudo access..."
         SUDO="sudo"
     fi
     
@@ -112,23 +58,10 @@ uninstall_bal() {
         $SUDO rm -f "$INSTALL_DIR/$BINARY_NAME"
     fi
     
-    # Ask about config removal
-    if [[ "$force" != "true" ]]; then
-        read -p "Remove config folder ($CONFIG_DIR)? [y/N] " -n 1 -r
-        echo ""
-        
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            if [[ -d "$CONFIG_DIR" ]]; then
-                echo "Removing config folder..."
-                rm -rf "$CONFIG_DIR"
-            fi
-        fi
-    else
-        # In force mode, remove config folder automatically
-        if [[ -d "$CONFIG_DIR" ]]; then
-            echo "Removing config folder..."
-            rm -rf "$CONFIG_DIR"
-        fi
+    # Remove config
+    if [[ -d "$CONFIG_DIR" ]]; then
+        echo "Removing config folder..."
+        rm -rf "$CONFIG_DIR"
     fi
     
     echo ""
@@ -140,53 +73,32 @@ show_help() {
     echo "bal installer"
     echo ""
     echo "Usage:"
-    echo "  install.sh                     Install or update bal"
-    echo "  install.sh --uninstall         Uninstall bal (asks for confirmation)"
-    echo "  install.sh --uninstall --force Uninstall without asking"
-    echo "  install.sh --help              Show this help"
+    echo "  install.sh              Install or update bal"
+    echo "  install.sh --uninstall  Uninstall bal"
+    echo "  install.sh --help       Show this help"
     echo ""
     echo "Options:"
     echo "  --uninstall    Remove bal"
-    echo "  --force, -f    Skip confirmation (use with --uninstall)"
     echo "  --help, -h     Show help"
 }
 
-# Parse arguments
-FORCE=false
-
-# Check for force flag anywhere in arguments
-for arg in "$@"; do
-    if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
-        FORCE=true
-        break
-    fi
-done
-
-# Filter out force arguments
-ARGS=()
-for arg in "$@"; do
-    if [[ "$arg" != "--force" && "$arg" != "-f" ]]; then
-        ARGS+=("$arg")
-    fi
-done
-
 # Handle commands
-if [[ "${ARGS[0]}" == "--uninstall" ]]; then
+if [[ "$1" == "--uninstall" ]]; then
     if ! check_existing_installation; then
         echo -e "${RED}bal is not installed.${NC}"
         exit 1
     fi
-    uninstall_bal "$FORCE"
+    uninstall_bal
     exit 0
 fi
 
-if [[ "${ARGS[0]}" == "--help" || "${ARGS[0]}" == "-h" ]]; then
+if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     show_help
     exit 0
 fi
 
-if [[ -n "${ARGS[0]}" ]]; then
-    echo "Unknown option: ${ARGS[0]}"
+if [[ -n "$1" ]]; then
+    echo "Unknown option: $1"
     echo "Run './install.sh --help' for usage."
     exit 1
 fi
