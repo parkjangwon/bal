@@ -16,7 +16,7 @@ bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정
 
 ## 설치
 
-### 빠른 설치 (원라이너)
+### 빠른 설치
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
