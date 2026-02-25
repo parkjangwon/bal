@@ -309,7 +309,10 @@ impl ProcessManager {
             .pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let config_text = summary.config_path.unwrap_or_else(|| "-".to_string());
+        let config_text = summary
+            .config_path
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
         let listen_text = summary
             .port
             .map(|port| format!("{}:{}", summary.bind_address, port))
@@ -345,6 +348,24 @@ impl ProcessManager {
                     backend.counters.refused,
                     backend.counters.other
                 ));
+            }
+        }
+
+        if !summary.running {
+            report.push_str("\n  hint: daemon is not running. Start it with 'bal start -d'");
+        }
+
+        if summary.config_path.is_none() {
+            report.push_str(
+                "\n  hint: config path unresolved. Pass '--config <FILE>' if using a custom path",
+            );
+        }
+
+        if let (Some(reachable), Some(total)) = (summary.backend_reachable, summary.backend_total) {
+            if total > 0 && reachable == 0 {
+                report.push_str("\n  hint: no reachable backend. Run 'bal doctor' and verify backend host/port/firewall");
+            } else if reachable < total {
+                report.push_str("\n  hint: partial backend reachability detected. Check failing backends in backend_details");
             }
         }
 
@@ -449,5 +470,27 @@ mod tests {
         assert!(report.contains("listen: 0.0.0.0:9295"));
         assert!(report.contains("backends: 1/2 reachable"));
         assert!(report.contains("backend_details"));
+        assert!(report.contains("partial backend reachability detected"));
+    }
+
+    #[test]
+    fn build_status_report_includes_actionable_hints_for_ambiguous_state() {
+        let report = ProcessManager::build_status_report(ProcessStatusSummary {
+            running: false,
+            pid: None,
+            config_path: None,
+            bind_address: "0.0.0.0".to_string(),
+            port: None,
+            method: None,
+            backend_total: Some(2),
+            backend_reachable: Some(0),
+            backends: Vec::new(),
+            active_connections: 0,
+            last_check_time: "2026-01-01T00:00:00Z".to_string(),
+        });
+
+        assert!(report.contains("daemon is not running"));
+        assert!(report.contains("config path unresolved"));
+        assert!(report.contains("no reachable backend"));
     }
 }

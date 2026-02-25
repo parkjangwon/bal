@@ -58,6 +58,10 @@ impl DoctorReport {
             }
         }
 
+        if self.has_critical_failure() {
+            lines.push("  next: resolve CRITICAL items first, then rerun 'bal doctor'".to_string());
+        }
+
         lines.join("\n")
     }
 }
@@ -369,6 +373,7 @@ mod tests {
         assert!(rendered.contains("address is already in use"));
         assert!(rendered.contains("hint:"));
         assert!(rendered.contains("bal status"));
+        assert!(rendered.contains("resolve CRITICAL items first"));
     }
 
     #[test]

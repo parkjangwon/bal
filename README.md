@@ -7,6 +7,16 @@
 
 bal은 고성능 L4(TCP) 로드밸런서로, SSL Passthrough와 무중단 설정 교체를 지원합니다.
 
+## 5분 시작 (권장: simple mode)
+
+1. `bal start` 실행 (없으면 `~/.bal/config.yaml` 자동 생성)
+2. config에 `mode: "simple"` 유지 + `backends`만 채우기
+3. `bal check`로 검증
+4. `bal start -d`로 데몬 실행
+5. `bal status`와 `bal doctor`로 상태 점검
+
+`simple` 모드는 운영에 필요한 핵심 필드만 노출해 실수를 줄입니다. 세부 런타임 튜닝이 필요할 때만 `mode: "advanced"`로 전환하세요.
+
 ## 주요 기능
 
 - **SSL Passthrough**: L4 레벨에서 패킷을 투명하게 전달하여 백엔드에서 SSL 인증서 처리
@@ -117,6 +127,8 @@ bal start
 또는 수동으로 `~/.bal/config.yaml` 생성:
 
 ```yaml
+mode: "simple"
+
 # bal 서비스 포트 (9295: 설계자 지정 유니크 포트)
 port: 9295
 
@@ -239,6 +251,7 @@ src/
 예시 `~/.bal/config.yaml`:
 
 ```yaml
+mode: "advanced"
 port: 9295
 bind_address: "0.0.0.0"
 method: "round_robin"
