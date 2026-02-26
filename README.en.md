@@ -40,7 +40,7 @@ bal status
 bal stop
 ```
 
-## Minimum config (Simple, recommended)
+## Minimum config (recommended)
 
 Same as `sample/config.yaml`:
 
@@ -51,14 +51,13 @@ backends:
     port: 9000
 ```
 
-> If `mode`/`runtime` is omitted, conservative safe defaults (auto-tuned) are applied.
+> If `runtime` is omitted, conservative auto-tuned defaults are applied based on backend count.
 
-## Advanced config (optional)
+## Explicit override config (optional)
 
-Use only when explicit tuning is needed (see `sample/config.advanced.yaml`):
+Set only the keys you want to override from defaults (see `sample/config.advanced.yaml`):
 
 ```yaml
-mode: "advanced"
 bind_address: "0.0.0.0"
 method: "round_robin"
 log_level: "info"
@@ -93,6 +92,8 @@ bal check --verbose
 bal check --json
 bal check --strict   # [advanced]
 ```
+
+> Backward compatibility: legacy `mode` in old config files is accepted and ignored.
 
 ### 2) `bal doctor` — runtime diagnostics
 - Purpose: process/PID/bind/backend reachability diagnostics

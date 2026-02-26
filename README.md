@@ -43,7 +43,7 @@ bal status
 bal stop
 ```
 
-## 최소 설정 (Simple, 권장)
+## 최소 설정 (권장)
 
 `sample/config.yaml`과 동일한 최소 필드:
 
@@ -54,14 +54,13 @@ backends:
     port: 9000
 ```
 
-> `mode`/`runtime` 생략 시 안전 기본값(보수적 auto-tuning)이 적용됩니다.
+> `runtime`을 생략하면 백엔드 수 기준 보수적 auto-tuning 기본값이 적용됩니다.
 
-## 고급 설정 (Advanced, 선택)
+## 명시적 오버라이드 설정 (선택)
 
-고급 튜닝이 필요할 때만 사용 (`sample/config.advanced.yaml` 참고):
+필요한 키만 명시해서 기본값을 덮어쓰세요 (`sample/config.advanced.yaml` 참고):
 
 ```yaml
-mode: "advanced"
 bind_address: "0.0.0.0"
 method: "round_robin"
 log_level: "info"
@@ -96,6 +95,8 @@ bal check --verbose
 bal check --json
 bal check --strict   # [advanced]
 ```
+
+> 하위 호환: 구버전 설정의 `mode` 필드는 파싱 시 무시됩니다.
 
 ### 2) `bal doctor` — 런타임 진단
 - 목적: 프로세스/PID/바인딩/백엔드 도달성 점검

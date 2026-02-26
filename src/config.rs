@@ -105,19 +105,6 @@ pub enum OverloadPolicy {
     Reject,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ConfigMode {
-    Simple,
-    Advanced,
-}
-
-impl Default for ConfigMode {
-    fn default() -> Self {
-        Self::Simple
-    }
-}
-
 impl Default for OverloadPolicy {
     fn default() -> Self {
         Self::Reject
@@ -197,10 +184,6 @@ impl Default for RuntimeTuning {
 /// Complete configuration structure
 #[derive(Debug, Clone, Serialize)]
 pub struct Config {
-    /// Configuration mode for operator-facing UX
-    #[serde(default)]
-    pub mode: ConfigMode,
-
     /// Port for load balancer to listen on
     #[serde(default = "default_port")]
     pub port: u16,
@@ -226,7 +209,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RawConfig {
-    mode: Option<ConfigMode>,
+    #[serde(default)]
+    _mode: Option<serde_yaml::Value>,
     port: Option<u16>,
     method: Option<BalanceMethod>,
     log_level: Option<String>,
@@ -245,7 +229,6 @@ impl<'de> Deserialize<'de> for Config {
         let backend_count = raw.backends.len();
 
         Ok(Self {
-            mode: raw.mode.unwrap_or_default(),
             port: raw.port.unwrap_or_else(default_port),
             method: raw.method.unwrap_or_default(),
             log_level: raw.log_level.unwrap_or_else(default_log_level),
@@ -384,7 +367,6 @@ impl Config {
     /// Create new Config with defaults
     pub fn new() -> Self {
         Self {
-            mode: ConfigMode::Simple,
             port: DEFAULT_PORT,
             method: BalanceMethod::RoundRobin,
             log_level: "info".to_string(),
@@ -518,8 +500,8 @@ impl Config {
 
     /// Generate default configuration file template
     pub fn default_template() -> String {
-        r#"# simple mode minimal config (recommended)
-# Optional advanced examples are documented in README.
+        r#"# minimal config (recommended)
+# Add only the fields you want to override from defaults.
 
 port: 9295
 backends:
@@ -577,37 +559,26 @@ pub async fn validate_config_file(config_path: Option<std::path::PathBuf>) -> Re
     // Load and parse
     let config = Config::load_from_file(&path).await?;
 
-    println!(
-        "  - Mode: {}",
-        match config.mode {
-            ConfigMode::Simple => "simple",
-            ConfigMode::Advanced => "advanced",
-        }
-    );
     println!("  - Listen: {}:{}", config.bind_address, config.port);
     println!("  - Load balancing: {:?}", config.method);
     println!("  - Log level: {}", config.log_level);
-    if config.mode == ConfigMode::Advanced {
-        println!(
-            "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms protection_trigger={} protection_window={}ms protection_recover={} max_conns={} idle_timeout={}ms overload_policy={}",
-            config.runtime.health_check_interval_ms,
-            config.runtime.health_check_timeout_ms,
-            config.runtime.health_check_fail_threshold,
-            config.runtime.health_check_success_threshold,
-            config.runtime.backend_connect_timeout_ms,
-            config.runtime.failover_backoff_initial_ms,
-            config.runtime.failover_backoff_max_ms,
-            config.runtime.backend_cooldown_ms,
-            config.runtime.protection_trigger_threshold,
-            config.runtime.protection_window_ms,
-            config.runtime.protection_stable_success_threshold,
-            config.runtime.max_concurrent_connections,
-            config.runtime.connection_idle_timeout_ms,
-            match config.runtime.overload_policy { OverloadPolicy::Reject => "reject" },
-        );
-    } else {
-        println!("  - Runtime: auto-tuned safe defaults (switch to mode=advanced to customize)");
-    }
+    println!(
+        "  - Runtime: health_interval={}ms health_timeout={}ms fail_threshold={} success_threshold={} backend_connect_timeout={}ms backoff_initial={}ms backoff_max={}ms cooldown={}ms protection_trigger={} protection_window={}ms protection_recover={} max_conns={} idle_timeout={}ms overload_policy={}",
+        config.runtime.health_check_interval_ms,
+        config.runtime.health_check_timeout_ms,
+        config.runtime.health_check_fail_threshold,
+        config.runtime.health_check_success_threshold,
+        config.runtime.backend_connect_timeout_ms,
+        config.runtime.failover_backoff_initial_ms,
+        config.runtime.failover_backoff_max_ms,
+        config.runtime.backend_cooldown_ms,
+        config.runtime.protection_trigger_threshold,
+        config.runtime.protection_window_ms,
+        config.runtime.protection_stable_success_threshold,
+        config.runtime.max_concurrent_connections,
+        config.runtime.connection_idle_timeout_ms,
+        match config.runtime.overload_policy { OverloadPolicy::Reject => "reject" },
+    );
     println!("  - Number of backends: {}", config.backends.len());
 
     // Validate backend connectivity
@@ -653,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_config_applies_simple_mode_and_auto_tuned_runtime_when_runtime_omitted() {
+    fn parse_config_applies_defaults_and_auto_tuned_runtime_when_runtime_omitted() {
         let yaml = r#"
 port: 9295
 backends:
@@ -663,7 +634,6 @@ backends:
 
         let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
 
-        assert_eq!(config.mode, ConfigMode::Simple);
         assert_eq!(config.bind_address, "0.0.0.0");
         assert_eq!(config.runtime.health_check_interval_ms, 500);
         assert_eq!(config.runtime.health_check_timeout_ms, 800);
@@ -678,7 +648,7 @@ backends:
     }
 
     #[test]
-    fn parse_config_overrides_runtime_and_bind_settings() {
+    fn parse_config_accepts_legacy_mode_field_but_ignores_it() {
         let yaml = r#"
 mode: "advanced"
 port: 9295
@@ -701,7 +671,6 @@ backends:
 
         let config: Config = serde_yaml::from_str(yaml).expect("config should parse");
 
-        assert_eq!(config.mode, ConfigMode::Advanced);
         assert_eq!(config.bind_address, "127.0.0.1");
         assert_eq!(config.runtime.health_check_interval_ms, 750);
         assert_eq!(config.runtime.health_check_timeout_ms, 1200);
@@ -748,7 +717,7 @@ backends:
     }
 
     #[test]
-    fn default_template_shows_only_simple_minimum_fields() {
+    fn default_template_shows_only_minimum_fields() {
         let template = Config::default_template();
         assert!(template.contains("port: 9295"));
         assert!(template.contains("backends:"));

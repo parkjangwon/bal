@@ -1,7 +1,6 @@
-# bal advanced mode example
-# Use this only when you need explicit runtime tuning.
+# bal explicit override example
+# Set only the fields you need to override from defaults.
 
-mode: "advanced"
 port: 9295
 bind_address: "0.0.0.0"
 method: "round_robin"
@@ -20,7 +19,7 @@ runtime:
   failover_backoff_max_ms: 3000
   backend_cooldown_ms: 1500
 
-  # Protection mode
+  # Protection behavior
   protection_trigger_threshold: 8
   protection_window_ms: 10000
   protection_stable_success_threshold: 6
