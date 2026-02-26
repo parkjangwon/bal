@@ -1,37 +1,39 @@
 # bal
 
-초경량 L4 TCP 로드밸런서입니다. 기본 철학은 **simple / convenient / stable** 입니다.
+온프레미스/로컬 운영에 맞춘 초경량 L4 TCP 로드밸런서.
+철학: **쉽고(Simple) / 단순하고(Convenient) / 빠르고(Fast) / 안정적(Stable)**
 
 ## 5분 시작
 
-1. 설치
+1) 설치
 ```bash
 cargo install --path .
 ```
 
-2. 샘플 설정 복사 (simple 모드 최소 필드)
+2) 최소 설정 준비
 ```bash
 mkdir -p ~/.bal
 cp sample/config.yaml ~/.bal/config.yaml
 ```
 
-3. 핵심 점검 (권장 순서)
+3) 핵심 운영 흐름 (고정)
 ```bash
 bal check
 bal doctor
 bal status
 ```
 
-4. 실행/중지
+4) 실행/중지
 ```bash
 bal start -d
 bal status
 bal stop
 ```
 
-## Config Profiles
+## 최소 설정 (Simple, 권장)
 
-### Simple 모드 (권장, 최소 필드)
+`sample/config.yaml`과 동일한 최소 필드:
+
 ```yaml
 port: 9295
 backends:
@@ -39,96 +41,126 @@ backends:
     port: 9000
 ```
 
-### Advanced 모드 (선택)
+> `mode`/`runtime` 생략 시 안전 기본값(보수적 auto-tuning)이 적용됩니다.
+
+## 고급 설정 (Advanced, 선택)
+
+고급 튜닝이 필요할 때만 사용:
+
 ```yaml
 mode: "advanced"
-port: 9295
+bind_address: "0.0.0.0"
 method: "round_robin"
 log_level: "info"
-bind_address: "0.0.0.0"
 runtime:
   health_check_interval_ms: 700
   health_check_timeout_ms: 1000
+  health_check_fail_threshold: 2
+  health_check_success_threshold: 2
+  backend_connect_timeout_ms: 500
+  failover_backoff_initial_ms: 300
+  failover_backoff_max_ms: 3000
+  backend_cooldown_ms: 1500
+  protection_trigger_threshold: 8
+  protection_window_ms: 10000
+  protection_stable_success_threshold: 6
+  max_concurrent_connections: 20000
+  connection_idle_timeout_ms: 30000
+  overload_policy: "reject"
+  tcp_backlog: 1024
 backends:
   - host: "127.0.0.1"
     port: 9000
 ```
 
-## Core Commands
+## 핵심 명령어
 
-### `bal check` (정적 검증, 기본은 간결 출력)
+### 1) `bal check` — 정적 설정 검증
+- 목적: YAML/필수값/범위 검증 (실행 전 검증)
 ```bash
 bal check
-bal check --verbose          # 상세 리포트
-bal check --json             # JSON 출력(기존 동작 유지)
-bal check --strict           # [advanced] warning도 실패 처리
+bal check --verbose
+bal check --json
+bal check --strict   # [advanced]
 ```
 
-### `bal doctor` (런타임 진단, 기본은 간결 출력)
+### 2) `bal doctor` — 런타임 진단
+- 목적: 프로세스/PID/바인딩/백엔드 도달성 점검
 ```bash
 bal doctor
-bal doctor --verbose         # 상세 진단 + 힌트
-bal doctor --json            # JSON 출력(기존 동작 유지)
-bal doctor --brief           # [advanced] 기본 간결 출력 강제(하위호환)
+bal doctor --verbose
+bal doctor --json
+bal doctor --brief   # [advanced]
 ```
 
-### `bal status` (상태 관찰, 기본은 간결 출력)
+### 3) `bal status` — 상태 관찰
+- 목적: 현재 daemon/backend 상태 조회
 ```bash
 bal status
-bal status --verbose         # backend_details + 힌트
-bal status --json            # JSON 출력(기존 동작 유지)
-bal status --brief           # [advanced] 기본 간결 출력 강제(하위호환)
+bal status --verbose
+bal status --json
+bal status --brief   # [advanced]
 ```
 
 ### 서비스 제어
 ```bash
-bal start -d
-bal graceful
+bal start            # foreground
+bal start -d         # daemon
+bal graceful         # 무중단 리로드
 bal stop
 ```
 
-## Troubleshooting
+## 자동 보호 모드 (Protection Mode)
 
-- `check` 실패:
-  - 설정 파일 경로 확인: `--config <FILE>`
-  - YAML 문법/필수 필드 확인
-- `doctor` 에서 CRITICAL:
-  - stale PID 제거 후 재시도
-  - 포트 충돌 프로세스 정리
-  - backend host/port/firewall 확인
-- `status` 에서 reachable 0/N:
-  - `bal doctor --verbose`로 상세 원인 확인
+장애 폭주(예: timeout/refused 급증, 백엔드 실질 불가용) 감지 시 자동으로 보호 모드가 켜집니다.
 
-## Structured Logs (ELK/Loki 연동)
+- ON 시: 재시도 공격성 완화(백오프/쿨다운 강화)
+- OFF 시: 안정 성공 누적 후 자동 복귀(히스테리시스)
+- 노출 위치: `bal status`, `bal doctor`, JSON 출력
 
-로그는 기본적으로 one-line JSON(NDJSON) 포맷으로 출력됩니다.
+## 로그 포맷 (ELK/Loki)
+
+로그는 기본적으로 **one-line JSON (NDJSON)** 입니다.
 
 ```bash
 bal start -d
 ```
 
-JSON 한 줄 스키마 키:
+JSON 키 스키마:
 - `timestamp` (RFC3339 UTC)
 - `level`
 - `message`
 - `module`
-- `event` (현재 `log`)
-- `fields` (JSON object, 현재 기본값 `{}`)
+- `event`
+- `fields`
 
 예시:
 ```json
 {"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v1.2.0 starting","module":"bal::main","event":"log","fields":{}}
 ```
 
-수집 팁:
-- Filebeat/Fluent Bit: NDJSON 파싱 후 `timestamp`를 이벤트 시간으로 매핑
-- Loki: `level`, `module`는 label로, `message`는 본문으로 저장
+## 트러블슈팅
 
-## Safety Notes (필수)
+- `check` 실패
+  - what_happened: 설정이 유효하지 않음
+  - why_likely: YAML 문법/필수 필드 누락
+  - do_this_now: `--config` 경로 확인 후 `bal check --verbose`
 
-- 운영 반영 전 반드시 아래 3개를 순서대로 실행하세요.
-  1. `bal check`
-  2. `bal doctor`
-  3. `bal status`
-- 가능하면 비루트 사용자로 실행하세요.
-- `bind_address: 0.0.0.0` 사용 시 방화벽/보안그룹 정책을 함께 점검하세요.
+- `doctor` CRITICAL
+  - what_happened: 런타임 환경 문제(PID/포트/네트워크)
+  - why_likely: stale PID, 포트 충돌, 방화벽/VPN 이슈
+  - do_this_now: `bal doctor --verbose`로 항목별 원인 확인
+
+- `status`에서 reachable 0/N
+  - what_happened: 모든 백엔드 도달 실패
+  - why_likely: 원격 백엔드 다운 또는 경로 단절
+  - do_this_now: `bal doctor --verbose` → backend/firewall/VPN 순서로 점검
+
+## 안전 수칙
+
+운영 반영 전 항상 아래 순서를 지키세요.
+1. `bal check`
+2. `bal doctor`
+3. `bal status`
+
+가능하면 non-root로 실행하고, `bind_address: 0.0.0.0` 사용 시 방화벽 정책을 반드시 함께 점검하세요.
