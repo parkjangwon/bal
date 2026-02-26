@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use daemonize::Daemonize;
-use log::info;
 
 mod backend_pool;
 mod check;
@@ -35,23 +34,15 @@ use constants::get_pid_file_path;
 use process::ProcessManager;
 
 /// Fork and detach process to run as daemon
+/// Note: PID file is created by supervisor::run_daemon, not here
 fn fork_daemon() -> Result<()> {
-    let pid_file = get_pid_file_path();
-    
-    // Ensure parent directory exists
-    if let Some(parent) = pid_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    
     let daemonize = Daemonize::new()
-        .pid_file(&pid_file)
-        .chown_pid_file(true)
         .working_directory("/tmp")
         .umask(0o027);
-    
+
     match daemonize.start() {
         Ok(_) => {
-            // Child process continues
+            // Child process continues - parent has exited
             Ok(())
         }
         Err(e) => {
@@ -61,19 +52,10 @@ fn fork_daemon() -> Result<()> {
     }
 }
 
-/// Application entry point
-///
-/// Parses CLI arguments and dispatches to appropriate subcommands.
-#[tokio::main]
-async fn main() -> Result<()> {
-    // Parse CLI arguments
-    let cli = Cli::parse_args();
-
-    // Determine if running in daemon mode
-    let daemon_mode = matches!(cli.command, Commands::Start { daemon: true, .. });
-
+/// Run async logic with the pre-parsed command
+async fn run_with_command(command: Commands, daemon_mode: bool) -> Result<()> {
     // For Start command, load config first to get log_level
-    let log_level = match &cli.command {
+    let log_level = match &command {
         Commands::Start {
             config: cli_config, ..
         } => {
@@ -91,37 +73,32 @@ async fn main() -> Result<()> {
         _ => "info".to_string(), // Default for non-start commands
     };
 
-    // Fork to background if daemon mode (before initializing logging)
-    if daemon_mode {
-        fork_daemon()?;
-    }
-
     // Initialize logging system with config's log_level
     logging::init_logging(&log_level, daemon_mode)?;
 
-    info!("bal v{} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("bal v{} starting", env!("CARGO_PKG_VERSION"));
 
     // Dispatch subcommands
-    match cli.command {
+    match command {
         Commands::Start { config, daemon } => {
             if daemon {
                 // Already forked, run daemon logic
-                info!("Starting in daemon mode");
+                log::info!("Starting in daemon mode");
                 supervisor::run_daemon(config.as_deref()).await?;
             } else {
                 // Run in foreground
-                info!("Starting in foreground mode");
+                log::info!("Starting in foreground mode");
                 supervisor::run_foreground(config.as_deref()).await?;
             }
         }
         Commands::Stop => {
             // Stop running process
-            info!("Stopping running bal process");
+            log::info!("Stopping running bal process");
             ProcessManager::stop_daemon()?;
         }
         Commands::Graceful => {
             // Zero-downtime config reload (send SIGHUP signal)
-            info!("Reloading configuration gracefully");
+            log::info!("Reloading configuration gracefully");
             ProcessManager::send_reload_signal()?;
         }
         Commands::Check {
@@ -130,7 +107,7 @@ async fn main() -> Result<()> {
             json,
             verbose,
         } => {
-            info!("Running static config check");
+            log::info!("Running static config check");
             check::run_and_print(config, strict, json, verbose).await?;
         }
         Commands::Status {
@@ -139,7 +116,7 @@ async fn main() -> Result<()> {
             brief,
             verbose,
         } => {
-            info!("Showing bal state status");
+            log::info!("Showing bal state status");
             ProcessManager::print_status(config, json, verbose && !brief).await?;
         }
         Commands::Doctor {
@@ -148,10 +125,29 @@ async fn main() -> Result<()> {
             brief,
             verbose,
         } => {
-            info!("Running bal doctor diagnostics");
+            log::info!("Running bal doctor diagnostics");
             doctor::run_and_print(config, json, verbose && !brief).await?;
         }
     }
 
     Ok(())
+}
+
+/// Application entry point
+/// Parses CLI arguments and dispatches to appropriate subcommands.
+fn main() -> Result<()> {
+    // Parse CLI arguments first (before any potential fork)
+    let cli = Cli::parse_args();
+
+    // Determine if running in daemon mode
+    let daemon_mode = matches!(cli.command, Commands::Start { daemon: true, .. });
+
+    // Fork to background if daemon mode (BEFORE initializing tokio runtime)
+    if daemon_mode {
+        fork_daemon()?;
+    }
+
+    // Create tokio runtime manually after potential fork
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run_with_command(cli.command, daemon_mode))
 }
