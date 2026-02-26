@@ -150,6 +150,19 @@ Example:
 {"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v1.2.0 starting","module":"bal::main","event":"log","fields":{}}
 ```
 
+## Release-gate integration suite
+
+Before release tagging, run the repository-owned gate suite:
+
+```bash
+scripts/e2e/run_gate.sh
+```
+
+Coverage:
+- check/doctor/status JSON contract key validation
+- NDJSON key validation (non-JSON noise lines are ignored safely)
+- deterministic stop lifecycle checks (stop success vs expected-not-running)
+
 ## Troubleshooting
 
 - `check` failed

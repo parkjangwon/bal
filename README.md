@@ -153,6 +153,19 @@ JSON 키 스키마:
 {"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v1.2.0 starting","module":"bal::main","event":"log","fields":{}}
 ```
 
+## 릴리즈 게이트 통합 테스트
+
+릴리즈 태깅 전에 아래 게이트 스크립트를 실행하세요.
+
+```bash
+scripts/e2e/run_gate.sh
+```
+
+검증 범위:
+- check/doctor/status JSON 계약 키 검증
+- NDJSON 로그 키 검증 (비JSON 노이즈 라인은 안전하게 무시)
+- stop 라이프사이클 결정론 검증 (정상 중지 vs 이미 중지 분리)
+
 ## 트러블슈팅
 
 - `check` 실패
