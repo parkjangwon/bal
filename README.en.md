@@ -3,6 +3,16 @@
 Ultra-lightweight L4 TCP load balancer for practical on-prem/local operations.
 Philosophy: **Simple / Convenient / Fast / Stable**
 
+## Quick install/update/uninstall (one-line)
+
+```bash
+# Install / update
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
+
+# Uninstall
+curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
+```
+
 ## 5-minute start
 
 1) Install
