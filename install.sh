@@ -267,28 +267,4 @@ else
     echo -e "${RED}Installed, but $BINARY_NAME not found in PATH${NC}"
     echo "You may need to restart your shell"
 fi
-$SUDO chmod +x "$INSTALL_DIR/$BINARY_NAME"
-
-# Verify installation
-if command -v "$BINARY_NAME" &> /dev/null; then
-    NEW_VERSION=$("$BINARY_NAME" --version 2>/dev/null | awk '{print $2}')
-    echo ""
-    if [[ "$IS_UPDATE" == true ]]; then
-        echo -e "${GREEN}Updated! ($INSTALLED_VERSION → $NEW_VERSION)${NC}"
-    else
-        echo -e "${GREEN}Installed! (version: $NEW_VERSION)${NC}"
-    fi
-    echo ""
-    echo "Usage: bal --help"
-    
-    # If was running before update, suggest restart
-    if [[ "$IS_UPDATE" == true ]] && [[ -f "$PID_FILE" ]]; then
-        echo ""
-        echo -e "${YELLOW}Note: bal was stopped during update.${NC}"
-        echo "Run 'bal start' to start again."
-    fi
-else
-    echo -e "${RED}Installed, but $BINARY_NAME not found in PATH${NC}"
-    echo "You may need to restart your shell"
-fi
 
