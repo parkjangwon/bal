@@ -11,7 +11,9 @@
 ```bash
 # 설치/업데이트
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash
+```
 
+```bash
 # 삭제
 curl -sSL https://raw.githubusercontent.com/parkjangwon/bal/main/install.sh | bash -s -- --uninstall
 ```
