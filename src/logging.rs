@@ -25,7 +25,7 @@ fn parse_log_level(level: &str) -> LevelFilter {
 /// Initialize logging system
 ///
 /// - foreground mode: logs to stdout
-/// - daemon mode: logs to stderr (usually redirected by service manager)
+/// - daemon mode: logs to file
 pub fn init_logging(log_level_str: &str, daemon_mode: bool) -> Result<()> {
     let log_level = parse_log_level(log_level_str);
 
@@ -63,7 +63,15 @@ fn init_file_logging(log_level: LevelFilter) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
+    let target = Box::new(
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?,
+    );
+
     env_logger::Builder::new()
+        .target(env_logger::Target::Pipe(target))
         .format(move |buf, record| {
             let payload = build_json_payload(
                 &chrono::Utc::now().to_rfc3339(),
@@ -76,7 +84,6 @@ fn init_file_logging(log_level: LevelFilter) -> Result<()> {
             writeln!(buf, "{}", payload)
         })
         .filter_level(log_level)
-        .target(env_logger::Target::Stderr)
         .init();
 
     Ok(())

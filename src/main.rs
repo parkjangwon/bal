@@ -8,6 +8,7 @@
 //! - Graceful Shutdown (existing connections preserved on SIGINT/SIGTERM)
 
 use anyhow::Result;
+use daemonize::Daemonize;
 use log::info;
 
 mod backend_pool;
@@ -30,7 +31,35 @@ mod supervisor;
 
 use cli::{Cli, Commands};
 use config::Config;
+use constants::get_pid_file_path;
 use process::ProcessManager;
+
+/// Fork and detach process to run as daemon
+fn fork_daemon() -> Result<()> {
+    let pid_file = get_pid_file_path();
+    
+    // Ensure parent directory exists
+    if let Some(parent) = pid_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    
+    let daemonize = Daemonize::new()
+        .pid_file(&pid_file)
+        .chown_pid_file(true)
+        .working_directory("/tmp")
+        .umask(0o027);
+    
+    match daemonize.start() {
+        Ok(_) => {
+            // Child process continues
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Failed to daemonize: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
 
 /// Application entry point
 ///
@@ -62,6 +91,11 @@ async fn main() -> Result<()> {
         _ => "info".to_string(), // Default for non-start commands
     };
 
+    // Fork to background if daemon mode (before initializing logging)
+    if daemon_mode {
+        fork_daemon()?;
+    }
+
     // Initialize logging system with config's log_level
     logging::init_logging(&log_level, daemon_mode)?;
 
@@ -71,7 +105,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Start { config, daemon } => {
             if daemon {
-                // Run as background daemon (detached)
+                // Already forked, run daemon logic
                 info!("Starting in daemon mode");
                 supervisor::run_daemon(config.as_deref()).await?;
             } else {
