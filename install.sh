@@ -5,9 +5,9 @@ set -e
 # bal one-line installer
 # Downloads and installs the latest release from GitHub
 
-REPO="parkjangwon/bal"
-INSTALL_DIR="/usr/local/bin"
-BINARY_NAME="bal"
+REPO="${REPO:-parkjangwon/bal}"
+INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+BINARY_NAME="${BINARY_NAME:-bal}"
 CONFIG_DIR="$HOME/.bal"
 PID_FILE="$CONFIG_DIR/bal.pid"
 
