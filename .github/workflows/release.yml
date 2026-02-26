@@ -65,6 +65,10 @@ jobs:
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TAG" \
+              --draft=false \
+              --generate-notes
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
               --generate-notes
           fi
 
