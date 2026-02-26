@@ -45,7 +45,7 @@ backends:
 
 ## 고급 설정 (Advanced, 선택)
 
-고급 튜닝이 필요할 때만 사용:
+고급 튜닝이 필요할 때만 사용 (`sample/config.advanced.yaml` 참고):
 
 ```yaml
 mode: "advanced"

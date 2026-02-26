@@ -45,7 +45,7 @@ backends:
 
 ## Advanced config (optional)
 
-Use only when explicit tuning is needed:
+Use only when explicit tuning is needed (see `sample/config.advanced.yaml`):
 
 ```yaml
 mode: "advanced"
