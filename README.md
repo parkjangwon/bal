@@ -1,9 +1,12 @@
 # bal
 
-온프레미스/로컬 운영에 맞춘 초경량 L4 TCP 로드밸런서.
-철학: **쉽고(Simple) / 단순하고(Convenient) / 빠르고(Fast) / 안정적(Stable)**
+<img width="1024" height="1024" alt="1772038664631" src="https://github.com/user-attachments/assets/2ea1ea47-50bd-4c41-b4ab-e71ac90a5f85" />
 
-## 빠른 설치/업데이트/삭제 (원라인)
+온프레미스/로컬 운영에 맞춘 초경량 L4 TCP 로드밸런서.
+
+**쉽고(Simple) / 단순하고(Convenient) / 빠르고(Fast) / 안정적(Stable)**
+
+## 빠른 설치/업데이트/삭제
 
 ```bash
 # 설치/업데이트
