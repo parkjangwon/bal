@@ -58,8 +58,8 @@ impl RuntimeConfig {
 pub struct AppState {
     /// Current runtime configuration (hot-swappable via arc-swap)
     config: ArcSwap<RuntimeConfig>,
-    /// Load balancer (shared across all connections)
-    load_balancer: LoadBalancer,
+    /// Load balancer (hot-swappable with runtime config)
+    load_balancer: ArcSwap<LoadBalancer>,
     /// Graceful shutdown trigger
     shutdown: tokio::sync::broadcast::Sender<()>,
     /// Config reload trigger
@@ -94,7 +94,7 @@ impl AppState {
 
         Self {
             config: ArcSwap::new(Arc::new(runtime_config)),
-            load_balancer,
+            load_balancer: ArcSwap::new(Arc::new(load_balancer)),
             shutdown,
             reload,
             active_connections: Arc::new(RwLock::new(0)),
@@ -116,7 +116,9 @@ impl AppState {
         let old_port = self.config.load().port;
         let new_port = new_config.port;
 
+        let new_lb = LoadBalancer::new(new_config.method, Arc::clone(&new_config.backend_pool));
         self.config.store(Arc::new(new_config));
+        self.load_balancer.store(Arc::new(new_lb));
 
         info!("Configuration swapped without downtime");
 
@@ -187,8 +189,8 @@ impl AppState {
     }
 
     /// Get load balancer reference
-    pub fn load_balancer(&self) -> &LoadBalancer {
-        &self.load_balancer
+    pub fn load_balancer(&self) -> Arc<LoadBalancer> {
+        self.load_balancer.load().clone()
     }
 
     pub fn protection_mode(&self) -> Arc<ProtectionMode> {
@@ -203,5 +205,57 @@ impl AppState {
     /// Get load balancing method
     pub fn method(&self) -> BalanceMethod {
         self.config.load().method
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{BackendConfig, RuntimeTuning};
+    use tokio::sync::{broadcast, mpsc};
+
+    fn runtime_config_with_ports(ports: &[u16]) -> RuntimeConfig {
+        let backends = ports
+            .iter()
+            .map(|p| BackendConfig {
+                host: "127.0.0.1".to_string(),
+                port: *p,
+            })
+            .collect::<Vec<_>>();
+
+        RuntimeConfig {
+            port: 9295,
+            method: BalanceMethod::RoundRobin,
+            bind_address: "0.0.0.0".to_string(),
+            runtime_tuning: RuntimeTuning::default(),
+            backend_pool: Arc::new(BackendPool::new(backends)),
+            config_path: PathBuf::from("/tmp/test-config.yaml"),
+        }
+    }
+
+    #[test]
+    fn swap_config_updates_load_balancer_backend_pool() {
+        let (shutdown_tx, _) = broadcast::channel(4);
+        let (reload_tx, _reload_rx) = mpsc::channel(4);
+
+        let state = AppState::new(
+            runtime_config_with_ports(&[9000, 9100]),
+            shutdown_tx,
+            reload_tx,
+        );
+
+        let initial = state
+            .load_balancer()
+            .select_backend()
+            .expect("initial backend should exist");
+        assert!(initial.config.port == 9000 || initial.config.port == 9100);
+
+        state.swap_config(runtime_config_with_ports(&[9200]));
+
+        let after = state
+            .load_balancer()
+            .select_backend()
+            .expect("backend should exist after swap");
+        assert_eq!(after.config.port, 9200);
     }
 }
