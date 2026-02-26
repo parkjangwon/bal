@@ -147,7 +147,7 @@ JSON schema keys:
 
 Example:
 ```json
-{"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v1.2.0 starting","module":"bal::main","event":"log","fields":{}}
+{"timestamp":"2026-02-26T00:00:00Z","level":"INFO","message":"bal v2.0.0 starting","module":"bal::main","event":"log","fields":{}}
 ```
 
 ## Release-gate integration suite
